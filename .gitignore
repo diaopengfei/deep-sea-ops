@@ -1,0 +1,12 @@
+# Go 构建缓存与本地产物
+server/.cache/
+server/deepsea-server.exe
+node_modules/
+dist/
+frontend/dist/
+frontend/node_modules/
+*.log
+*.db
+*.snap
+go.sum
+**/go.sum
