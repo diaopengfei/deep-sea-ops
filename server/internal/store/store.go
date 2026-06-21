@@ -23,14 +23,19 @@ type Store struct {
 }
 
 // NewStore 创建并启动一个 Raft 单节点。
-// raftDir: 存放 Raft 日志/快照的目录
+// raftDir: 存放 Raft 日志/快照 的目录
 // raftAddr: Raft 节点间通信地址(单节点就是自己)
 func NewStore(raftDir, raftAddr string) (*Store, error) {
 	if err := os.MkdirAll(raftDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建 raft 目录: %w", err)
 	}
 
-	fsm := NewFSM()
+	// M2: FSM 用 bbolt 持久化存储, 数据库文件放 raftDir 下。
+	// 这样 main.go 不用改, 存储后端升级对上层透明。
+	fsm, err := NewFSM(filepath.Join(raftDir, "fsm.db"))
+	if err != nil {
+		return nil, fmt.Errorf("创建 FSM: %w", err)
+	}
 
 	config := raft.DefaultConfig()
 	config.LocalID = "node1"
@@ -108,7 +113,7 @@ func (s *Store) AddServer(srv model.Server) error {
 	return nil
 }
 
-// ListServers 读取当前所有服务器。读操作直接走 FSM 内存, 不过 Raft。
+// ListServers 读取当前所有服务器。读操作直接走 FSM, 不过 Raft。
 func (s *Store) ListServers() []model.Server {
 	return s.fsm.List()
 }
