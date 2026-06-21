@@ -1,6 +1,5 @@
 # deepsea-ops Makefile
-# 构建、开发、检查的统一入口。产物统一输出到 dist/, 不污染源码目录。
-
+# 閺嬪嫬缂撻妴浣哥磻閸欐垯鈧焦顥呴弻銉ф畱缂佺喍绔撮崗銉ュ經閵嗗倷楠囬悧鈺冪埠娑撯偓鏉堟挸鍤崚?dist/, 娑撳秵钖勯弻鎾寸爱閻胶娲拌ぐ鏇樷偓?
 GO          ?= go
 GOFMT       ?= $(GO) fmt
 GOOS        ?= $(shell go env GOOS)
@@ -9,53 +8,51 @@ DIST_DIR    := dist
 SERVER_BIN  := $(DIST_DIR)/deepsea-server
 AGENT_BIN   := $(DIST_DIR)/deepsea-agent
 
-.PHONY: all build server agent web clean dev check fmt vet help
+.PHONY: all build build-linux server agent web clean dev check fmt vet help
 
 all: build
 
-## build: 构建后端(server + agent)和前端
-build: server agent web
+## build: 閺嬪嫬缂撻崥搴ｎ伂(server + agent)閸滃苯澧犵粩?build: server agent web
 
-## server: 构建控制面到 dist/deepsea-server
+build-linux: cross-linux web
+
+## server: 閺嬪嫬缂撻幒褍鍩楅棃銏犲煂 dist/deepsea-server
 server:
 	@mkdir -p $(DIST_DIR)
-	cd server && CGO_ENABLED=0 $(GO) build -ldflags="-s -w" -o ../$(SERVER_BIN) ./cmd/server
+	cd server && CGO_ENABLED=0 $(GO) build -buildvcs=false -ldflags="-s -w" -o ../$(SERVER_BIN) ./cmd/server
 
-## agent: 构建 Agent 到 dist/deepsea-agent
+## agent: 閺嬪嫬缂?Agent 閸?dist/deepsea-agent
 agent:
 	@mkdir -p $(DIST_DIR)
-	cd server && CGO_ENABLED=0 $(GO) build -ldflags="-s -w" -o ../$(AGENT_BIN) ./cmd/agent
+	cd server && CGO_ENABLED=0 $(GO) build -buildvcs=false -ldflags="-s -w" -o ../$(AGENT_BIN) ./cmd/agent
 
-## web: 构建前端到 web/dist/
+## web: 閺嬪嫬缂撻崜宥囶伂閸?web/dist/
 web:
 	cd web && npm install && npm run build
 
-## dev: 启动后端和前端开发服务(需两个终端, 或各自后台)
+## dev: 閸氼垰濮╅崥搴ｎ伂閸滃苯澧犵粩顖氱磻閸欐垶婀囬崝?闂団偓娑撱倓閲滅紒鍫㈩伂, 閹存牕鎮囬懛顏勬倵閸?
 dev:
-	@echo "在两个终端分别运行:"
+	@echo "閸︺劋琚辨稉顏嗙矒缁旑垰鍨庨崚顐ョ箥鐞?"
 	@echo "  cd server && $(GO) run ./cmd/server"
 	@echo "  cd web && npm run dev"
 
-## check: 格式化 + 静态检查
-check: fmt vet
+## check: 閺嶇厧绱￠崠?+ 闂堟瑦鈧焦顥呴弻?check: fmt vet
 
-## fmt: 格式化 Go 代码
-fmt:
+## fmt: 閺嶇厧绱￠崠?Go 娴狅絿鐖?fmt:
 	cd server && $(GOFMT) ./...
 
-## vet: 静态检查
-vet:
+## vet: 闂堟瑦鈧焦顥呴弻?vet:
 	cd server && $(GO) vet ./...
 
-## clean: 清理构建产物
+## clean: 濞撳懐鎮婇弸鍕紦娴溠呭⒖
 clean:
 	rm -rf $(DIST_DIR) web/dist
 
-## cross-linux: 交叉编译 Linux amd64(从 Windows/Mac 开发机)
+## cross-linux: 娴溿倕寮剁紓鏍槯 Linux amd64(娴?Windows/Mac 瀵偓閸欐垶婧€)
 cross-linux:
 	@mkdir -p $(DIST_DIR)
-	cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w" -o ../$(SERVER_BIN) ./cmd/server
-	cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w" -o ../$(AGENT_BIN) ./cmd/agent
+	cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -buildvcs=false -ldflags="-s -w" -o ../$(SERVER_BIN) ./cmd/server
+	cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -buildvcs=false -ldflags="-s -w" -o ../$(AGENT_BIN) ./cmd/agent
 
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
