@@ -9,6 +9,9 @@ import (
 	"github.com/deepsea-ops/server/internal/store"
 )
 
+// maxBodyBytes 限制请求体大小, 防止恶意大请求体耗尽内存。
+const maxBodyBytes = 1 << 20 // 1 MiB
+
 // New 构造 HTTP 路由, 注入 store 和 grpcServer。
 func New(s *store.Store, gs *grpcserver.Server) http.Handler {
 	mux := http.NewServeMux()
@@ -40,6 +43,8 @@ func handleListServers(w http.ResponseWriter, s *store.Store) {
 }
 
 func handleAddServer(w http.ResponseWriter, r *http.Request, s *store.Store) {
+	// 限制请求体大小, 防止 DoS
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var srv model.Server
 	if err := json.NewDecoder(r.Body).Decode(&srv); err != nil {
 		http.Error(w, "请求体格式错误: "+err.Error(), http.StatusBadRequest)

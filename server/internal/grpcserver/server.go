@@ -2,7 +2,6 @@ package grpcserver
 
 import (
 	"fmt"
-	"context"
 	"io"
 	"log"
 	"sync"
@@ -26,6 +25,7 @@ type agentConn struct {
 	ip       string
 	lastSeen time.Time
 	send     chan *pb.ServerMessage // 下行通道: 往这个 Agent 推消息
+	done     chan struct{}          // 关闭时通知 send goroutine 退出
 }
 
 func NewServer() *Server {
@@ -53,15 +53,24 @@ func (s *Server) ListAgents() []AgentInfo {
 }
 
 // Connect 是双向流 RPC 的服务端实现。
-// 流程: Agent 建连 -> 第一条消息应是 Register -> 循环读 Agent 上行消息
 //
-//	-> 同时有个 goroutine 从 send 通道读下行消息发给 Agent。
-//
-// 连接断开时从注册表移除。
+// 协议约定: Agent 连上后的第一条消息必须是 Register。
+// 收到 Register 后才启动下行发送 goroutine, 这样 conn 在 goroutine 启动时已确定,
+// 避免了"主循环写 conn + send goroutine 读 conn"的数据竞争。
 func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
-	var conn *agentConn
+	// 1. 等待 Register 作为第一条消息
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	regMsg, ok := first.Payload.(*pb.AgentMessage_Register)
+	if !ok {
+		return fmt.Errorf("第一条消息必须是 Register, 实际收到 %T", first.Payload)
+	}
+	conn := s.handleRegister(regMsg.Register, stream)
+	log.Printf("Agent 注册: id=%s host=%s ip=%s", regMsg.Register.AgentId, regMsg.Register.Hostname, regMsg.Register.Ip)
 
-	// 后台 goroutine: 把 send 通道里的下行消息发给 Agent
+	// 2. 注册成功后启动下行发送 goroutine, conn 在此处捕获, 不再有竞争
 	ctx := stream.Context()
 	sendDone := make(chan struct{})
 	go func() {
@@ -70,10 +79,9 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 			select {
 			case <-ctx.Done():
 				return
-			case msg, ok := <-s.recvChanFor(conn):
-				if !ok {
-					return
-				}
+			case <-conn.done:
+				return
+			case msg := <-conn.send:
 				if err := stream.Send(msg); err != nil {
 					return
 				}
@@ -81,7 +89,7 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 		}
 	}()
 
-	// 主循环: 读 Agent 上行消息
+	// 3. 主循环: 读 Agent 上行消息
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -93,39 +101,22 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 		}
 
 		switch p := msg.Payload.(type) {
-		case *pb.AgentMessage_Register:
-			conn = s.handleRegister(p.Register, stream)
 		case *pb.AgentMessage_Heartbeat:
-			if conn != nil {
-				s.handleHeartbeat(conn, p.Heartbeat)
-			}
+			s.handleHeartbeat(conn, p.Heartbeat)
 		case *pb.AgentMessage_Result:
-			if conn != nil {
-				log.Printf("收到 Agent %s 指令结果: %s success=%v", conn.id, p.Result.CommandId, p.Result.Success)
-			}
+			log.Printf("收到 Agent %s 指令结果: %s success=%v", conn.id, p.Result.CommandId, p.Result.Success)
 		}
 	}
 
-	// 连接断开: 清理注册表
-	if conn != nil {
-		s.mu.Lock()
-		delete(s.agents, conn.id)
-		s.mu.Unlock()
-		log.Printf("Agent %s 断开连接", conn.id)
-	}
+	// 4. 连接断开: 通知 send goroutine 退出, 并从注册表移除(仅当仍是当前 conn)
+	s.removeAgent(conn)
 	<-sendDone
 	return nil
 }
 
-// recvChanFor 返回 conn 的下行通道(未注册时返回 nil, goroutine 会因 nil 通道阻塞)。
-func (s *Server) recvChanFor(conn *agentConn) <-chan *pb.ServerMessage {
-	if conn == nil {
-		return nil
-	}
-	return conn.send
-}
-
 // handleRegister 处理注册消息: 记录 Agent 信息, 回复 ACK。
+// 若同一 ID 的旧连接仍在, 关闭其 done 通道使其 send goroutine 退出,
+// 避免旧连接清理时误删新连接(重连竞态)。
 func (s *Server) handleRegister(req *pb.RegisterRequest, stream pb.AgentService_ConnectServer) *agentConn {
 	c := &agentConn{
 		id:       req.AgentId,
@@ -133,11 +124,16 @@ func (s *Server) handleRegister(req *pb.RegisterRequest, stream pb.AgentService_
 		ip:       req.Ip,
 		lastSeen: time.Now(),
 		send:     make(chan *pb.ServerMessage, 16),
+		done:     make(chan struct{}),
 	}
+
 	s.mu.Lock()
+	if old, ok := s.agents[req.AgentId]; ok {
+		// 旧连接还挂着: 通知它退出, 它的 removeAgent 会发现已被替换而不删新 conn
+		close(old.done)
+	}
 	s.agents[req.AgentId] = c
 	s.mu.Unlock()
-	log.Printf("Agent 注册: id=%s host=%s ip=%s", req.AgentId, req.Hostname, req.Ip)
 
 	// 回复 ACK
 	_ = stream.Send(&pb.ServerMessage{
@@ -146,6 +142,18 @@ func (s *Server) handleRegister(req *pb.RegisterRequest, stream pb.AgentService_
 		},
 	})
 	return c
+}
+
+// removeAgent 从注册表移除 conn, 但仅当 map 里存的仍是同一个 conn。
+// 这样旧连接断开时不会误删已被新连接替换的条目。
+func (s *Server) removeAgent(c *agentConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.agents[c.id]; ok && cur == c {
+		delete(s.agents, c.id)
+		close(c.done)
+		log.Printf("Agent %s 断开连接", c.id)
+	}
 }
 
 // handleHeartbeat 更新 lastSeen(实际 CPU/内存后续处理)。
@@ -166,10 +174,9 @@ func (s *Server) SendCommand(agentID string, cmd *pb.Command) error {
 	select {
 	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
 		return nil
+	case <-c.done:
+		return fmt.Errorf("agent %s 已断开", agentID)
 	default:
 		return fmt.Errorf("agent %s 发送通道已满", agentID)
 	}
 }
-
-// 用 context 防止 unused 警告(后续接口会用到)
-var _ = context.Background

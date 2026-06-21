@@ -45,6 +45,11 @@ func NewFSM(dbPath string) (*FSM, error) {
 	return &FSM{db: db}, nil
 }
 
+// Close 关闭底层 bbolt 数据库。
+func (f *FSM) Close() error {
+	return f.db.Close()
+}
+
 // Apply 在 Raft 确认一条命令后被回调。l.Data 就是我们传给 raft.Apply 的字节。
 // 用 bbolt 写事务把数据落盘。
 // 注意参数名用 l 而不是 log, 否则会遮蔽 log 包。

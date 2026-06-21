@@ -18,23 +18,36 @@ import (
 // Store 封装 Raft 实例, 对外提供简单的读写方法。
 // 上层(API 层)只跟 Store 打交道, 不直接碰 raft.Raft 的细节。
 type Store struct {
-	raft *raft.Raft
-	fsm  *FSM
+	raft   *raft.Raft
+	fsm    *FSM
+	closer []func() error // 按打开逆序关闭的资源
 }
 
 // NewStore 创建并启动一个 Raft 单节点。
 // raftDir: 存放 Raft 日志/快照 的目录
 // raftAddr: Raft 节点间通信地址(单节点就是自己)
+//
+// 出错时已打开的资源会被关闭, 不泄漏。
 func NewStore(raftDir, raftAddr string) (*Store, error) {
 	if err := os.MkdirAll(raftDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建 raft 目录: %w", err)
 	}
 
-	// M2: FSM 用 bbolt 持久化存储, 数据库文件放 raftDir 下。
-	// 这样 main.go 不用改, 存储后端升级对上层透明。
+	s := &Store{}
+
+	// FSM 用 bbolt 持久化存储, 数据库文件放 raftDir 下。
 	fsm, err := NewFSM(filepath.Join(raftDir, "fsm.db"))
 	if err != nil {
 		return nil, fmt.Errorf("创建 FSM: %w", err)
+	}
+	s.fsm = fsm
+	s.closer = append(s.closer, fsm.Close)
+
+	// 失败时按逆序关闭已打开资源
+	cleanup := func() {
+		for i := len(s.closer) - 1; i >= 0; i-- {
+			_ = s.closer[i]()
+		}
 	}
 
 	config := raft.DefaultConfig()
@@ -44,23 +57,31 @@ func NewStore(raftDir, raftAddr string) (*Store, error) {
 
 	logStore, err := raftboltdb.NewBoltStore(filepath.Join(raftDir, "raft.db"))
 	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("创建 bolt store: %w", err)
 	}
+	s.closer = append(s.closer, logStore.Close)
 
 	snapshotStore, err := raft.NewFileSnapshotStore(raftDir, 1, os.Stderr)
 	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("创建 snapshot store: %w", err)
 	}
 
 	transport, err := raft.NewTCPTransport(raftAddr, nil, 3, 10*time.Second, os.Stderr)
 	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("创建 transport: %w", err)
 	}
+	s.closer = append(s.closer, transport.Close)
 
 	r, err := raft.NewRaft(config, fsm, logStore, logStore, snapshotStore, transport)
 	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("创建 raft: %w", err)
 	}
+	s.raft = r
+	s.closer = append(s.closer, func() error { return r.Shutdown().Error() })
 
 	bootstrapCfg := raft.Configuration{
 		Servers: []raft.Server{{
@@ -70,16 +91,28 @@ func NewStore(raftDir, raftAddr string) (*Store, error) {
 	}
 	if err := r.BootstrapCluster(bootstrapCfg).Error(); err != nil {
 		if !errors.Is(err, raft.ErrCantBootstrap) {
+			cleanup()
 			return nil, fmt.Errorf("bootstrap: %w", err)
 		}
 	}
 
-	s := &Store{raft: r, fsm: fsm}
 	if err := s.waitForLeader(10 * time.Second); err != nil {
+		cleanup()
 		return nil, err
 	}
 	log.Printf("Raft 单节点就绪, Leader=%s", raftAddr)
 	return s, nil
+}
+
+// Close 释放所有资源(按打开逆序)。
+func (s *Store) Close() error {
+	var firstErr error
+	for i := len(s.closer) - 1; i >= 0; i-- {
+		if err := s.closer[i](); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Store) waitForLeader(timeout time.Duration) error {

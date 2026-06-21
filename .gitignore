@@ -1,24 +1,29 @@
-# Go 构建缓存与产物(任意层级)
-**/.cache/
+# 构建产物: 统一输出到仓库根 dist/, 不污染源码目录
+/dist/
+/bin/
 *.exe
-deepsea-server.exe
-deepsea-agent.exe
+*.exe~
 
-# Raft 运行时数据(日志/快照, 不提交)
+# Go 构建缓存(任意层级)
+**/.cache/
+
+# Raft 运行时数据(日志/快照)
 server/raft-data/
 
 # 运行时日志
 *.log
-server.log
-server.err.log
-agent.log
-agent.err.log
 
 # 前端
 node_modules/
-dist/
 web/dist/
+
+# 文档(本地维护, 不纳入版本库)
+docs/
 
 # 编辑器配置
 .idea/
 .vscode/
+
+# 操作系统杂物
+.DS_Store
+Thumbs.db

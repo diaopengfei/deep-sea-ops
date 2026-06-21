@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -20,12 +21,12 @@ type Client struct {
 	ip       string
 	conn     *grpc.ClientConn
 	stream   pb.AgentService_ConnectClient
+	wg       sync.WaitGroup // 等待 recvLoop 退出, 避免 goroutine 泄漏
 }
 
 // New 用本机信息创建 Agent 客户端。
 func New(agentID, serverAddr string) (*Client, error) {
 	hostname, _ := os.Hostname()
-	// 取本机第一个非回环 IP 作为上报地址
 	ip := localIP()
 
 	conn, err := grpc.NewClient(serverAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -40,7 +41,9 @@ func New(agentID, serverAddr string) (*Client, error) {
 	}, nil
 }
 
-// Run 建立 gRPC 流, 发注册, 启动心跳和接收两个循环, 阻塞直到断开。
+// Run 建立 gRPC 流, 发注册, 启动心跳和接收两个循环, 阻塞直到断开或 ctx 取消。
+// 注意: 当前版本断开后即返回, 不自动重连。生产环境靠 systemd Restart=on-failure
+// 重启进程; 进程内重连在后续版本实现。
 func (c *Client) Run(ctx context.Context) error {
 	client := pb.NewAgentServiceClient(c.conn)
 	stream, err := client.Connect(ctx)
@@ -62,7 +65,11 @@ func (c *Client) Run(ctx context.Context) error {
 	log.Printf("Agent %s 已注册 (host=%s ip=%s)", c.agentID, c.hostname, c.ip)
 
 	// 接收循环: 收控制面下发的消息(ACK/指令)
-	go c.recvLoop()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.recvLoop()
+	}()
 
 	// 心跳循环: 每 5 秒发一次
 	ticker := time.NewTicker(5 * time.Second)
@@ -70,9 +77,14 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// 上下文取消: 主动关闭流, 让 recvLoop 的 Recv 返回错误退出
+			_ = stream.CloseSend()
+			c.wg.Wait()
 			return ctx.Err()
 		case <-ticker.C:
 			if err := c.sendHeartbeat(); err != nil {
+				// 发送失败说明流断了, 等 recvLoop 退出后返回
+				c.wg.Wait()
 				return err
 			}
 		}
@@ -110,7 +122,7 @@ func (c *Client) recvLoop() {
 	}
 }
 
-// Close 关闭连接。
+// Close 关闭 gRPC 连接。
 func (c *Client) Close() error {
 	return c.conn.Close()
 }
