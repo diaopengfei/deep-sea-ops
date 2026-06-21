@@ -1,15 +1,17 @@
-# Go 构建缓存与产物
-.cache/
+# Go 鏋勫缓缂撳瓨涓庝骇鐗?.cache/
 *.exe
 server/deepsea-server.exe
 
-# Raft 运行时数据(日志/快照, 不提交)
+# Raft 杩愯鏃舵暟鎹?鏃ュ織/蹇収, 涓嶆彁浜?
 server/raft-data/
 
-# 前端
+# 鍓嶇
 node_modules/
 dist/
 web/dist/
 
-# 杂项
+# 鏉傞」
 *.log
+# 编辑器配置
+.idea/
+.vscode/
