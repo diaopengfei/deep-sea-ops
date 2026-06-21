@@ -31,20 +31,57 @@
             {{ formatTime(row.lastSeen) }}
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="120">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openReadConfig(row)">读配置</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </div>
+
+    <!-- 读配置对话框 -->
+    <el-dialog v-model="configDialog" title="读取配置文件" width="640px">
+      <el-form label-width="100px">
+        <el-form-item label="Agent">
+          <el-input :model-value="currentAgentId" disabled />
+        </el-form-item>
+        <el-form-item label="文件路径">
+          <el-input v-model="configPath" placeholder="如 /opt/app/application.yml" />
+        </el-form-item>
+      </el-form>
+      <el-form-item v-if="configContent" label="文件内容">
+        <el-input
+          v-model="configContent"
+          type="textarea"
+          :rows="12"
+          readonly
+          class="config-output"
+        />
+      </el-form-item>
+      <template #footer>
+        <el-button @click="configDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="reading" @click="onReadConfig">读取</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Connection, Refresh } from '@element-plus/icons-vue'
-import { listAgents } from '../api/server'
+import { listAgents, readAgentConfig } from '../api/server'
 import type { AgentInfo } from '../api/types'
 
 const agents = ref<AgentInfo[]>([])
 const loading = ref(false)
 let timer: number | undefined
+
+const configDialog = ref(false)
+const currentAgentId = ref('')
+const configPath = ref('')
+const configContent = ref('')
+const reading = ref(false)
 
 async function loadAgents() {
   loading.value = true
@@ -55,14 +92,37 @@ async function loadAgents() {
   }
 }
 
-// 格式化时间: ISO 字符串 -> 本地可读格式
 function formatTime(iso: string): string {
   if (!iso) return '-'
-  const d = new Date(iso)
-  return d.toLocaleString('zh-CN', { hour12: false })
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false })
 }
 
-// 每 5 秒自动刷新, 实时反映 Agent 在线状态
+function openReadConfig(row: AgentInfo) {
+  currentAgentId.value = row.id
+  configPath.value = ''
+  configContent.value = ''
+  configDialog.value = true
+}
+
+async function onReadConfig() {
+  if (!configPath.value) {
+    ElMessage.warning('请输入文件路径')
+    return
+  }
+  reading.value = true
+  configContent.value = ''
+  try {
+    const res = await readAgentConfig(currentAgentId.value, configPath.value)
+    configContent.value = res.content
+    ElMessage.success('读取成功')
+  } catch (e: any) {
+    const msg = e.response?.data?.error || e.message
+    ElMessage.error('读取失败: ' + msg)
+  } finally {
+    reading.value = false
+  }
+}
+
 onMounted(() => {
   loadAgents()
   timer = window.setInterval(loadAgents, 5000)
@@ -85,4 +145,5 @@ onUnmounted(() => {
 .status-cell { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot-online { background: #67c23a; }
+.config-output { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; }
 </style>

@@ -7,15 +7,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	pb "github.com/deepsea-ops/server/internal/proto/agent"
 )
 
 // Server 实现生成的 AgentServiceServer 接口, 处理 Agent 连接。
 type Server struct {
-	pb.UnimplementedAgentServiceServer // 嵌入未实现基类, 避免 proto 升级后编译失败
+	pb.UnimplementedAgentServiceServer
 
-	mu     sync.RWMutex
-	agents map[string]*agentConn // 在线 Agent 注册表, key=agent_id
+	mu       sync.RWMutex
+	agents   map[string]*agentConn           // 在线 Agent 注册表
+	results  map[string]chan *pb.CommandResult // commandID -> 结果等待通道
 }
 
 // agentConn 记录一个在线 Agent 的信息。
@@ -24,15 +27,18 @@ type agentConn struct {
 	hostname string
 	ip       string
 	lastSeen time.Time
-	send     chan *pb.ServerMessage // 下行通道: 往这个 Agent 推消息
-	done     chan struct{}          // 关闭时通知 send goroutine 退出
+	send     chan *pb.ServerMessage
+	done     chan struct{}
 }
 
 func NewServer() *Server {
-	return &Server{agents: make(map[string]*agentConn)}
+	return &Server{
+		agents:  make(map[string]*agentConn),
+		results: make(map[string]chan *pb.CommandResult),
+	}
 }
 
-// ListAgents 返回当前在线 Agent 列表(供 HTTP API 查询)。
+// AgentInfo 供 HTTP API 查询。
 type AgentInfo struct {
 	ID       string    `json:"id"`
 	Hostname string    `json:"hostname"`
@@ -52,13 +58,8 @@ func (s *Server) ListAgents() []AgentInfo {
 	return out
 }
 
-// Connect 是双向流 RPC 的服务端实现。
-//
-// 协议约定: Agent 连上后的第一条消息必须是 Register。
-// 收到 Register 后才启动下行发送 goroutine, 这样 conn 在 goroutine 启动时已确定,
-// 避免了"主循环写 conn + send goroutine 读 conn"的数据竞争。
+// Connect 双向流 RPC。Agent 第一条消息必须是 Register。
 func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
-	// 1. 等待 Register 作为第一条消息
 	first, err := stream.Recv()
 	if err != nil {
 		return err
@@ -70,7 +71,6 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 	conn := s.handleRegister(regMsg.Register, stream)
 	log.Printf("Agent 注册: id=%s host=%s ip=%s", regMsg.Register.AgentId, regMsg.Register.Hostname, regMsg.Register.Ip)
 
-	// 2. 注册成功后启动下行发送 goroutine, conn 在此处捕获, 不再有竞争
 	ctx := stream.Context()
 	sendDone := make(chan struct{})
 	go func() {
@@ -89,7 +89,6 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 		}
 	}()
 
-	// 3. 主循环: 读 Agent 上行消息
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -104,38 +103,29 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 		case *pb.AgentMessage_Heartbeat:
 			s.handleHeartbeat(conn, p.Heartbeat)
 		case *pb.AgentMessage_Result:
-			log.Printf("收到 Agent %s 指令结果: %s success=%v", conn.id, p.Result.CommandId, p.Result.Success)
+			s.handleResult(p.Result)
 		}
 	}
 
-	// 4. 连接断开: 通知 send goroutine 退出, 并从注册表移除(仅当仍是当前 conn)
 	s.removeAgent(conn)
 	<-sendDone
 	return nil
 }
 
-// handleRegister 处理注册消息: 记录 Agent 信息, 回复 ACK。
-// 若同一 ID 的旧连接仍在, 关闭其 done 通道使其 send goroutine 退出,
-// 避免旧连接清理时误删新连接(重连竞态)。
 func (s *Server) handleRegister(req *pb.RegisterRequest, stream pb.AgentService_ConnectServer) *agentConn {
 	c := &agentConn{
-		id:       req.AgentId,
-		hostname: req.Hostname,
-		ip:       req.Ip,
+		id: req.AgentId, hostname: req.Hostname, ip: req.Ip,
 		lastSeen: time.Now(),
 		send:     make(chan *pb.ServerMessage, 16),
 		done:     make(chan struct{}),
 	}
-
 	s.mu.Lock()
 	if old, ok := s.agents[req.AgentId]; ok {
-		// 旧连接还挂着: 通知它退出, 它的 removeAgent 会发现已被替换而不删新 conn
 		close(old.done)
 	}
 	s.agents[req.AgentId] = c
 	s.mu.Unlock()
 
-	// 回复 ACK
 	_ = stream.Send(&pb.ServerMessage{
 		Payload: &pb.ServerMessage_RegisterAck{
 			RegisterAck: &pb.RegisterAck{Accepted: true, Message: "注册成功"},
@@ -144,8 +134,6 @@ func (s *Server) handleRegister(req *pb.RegisterRequest, stream pb.AgentService_
 	return c
 }
 
-// removeAgent 从注册表移除 conn, 但仅当 map 里存的仍是同一个 conn。
-// 这样旧连接断开时不会误删已被新连接替换的条目。
 func (s *Server) removeAgent(c *agentConn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -156,27 +144,70 @@ func (s *Server) removeAgent(c *agentConn) {
 	}
 }
 
-// handleHeartbeat 更新 lastSeen(实际 CPU/内存后续处理)。
 func (s *Server) handleHeartbeat(c *agentConn, hb *pb.Heartbeat) {
 	s.mu.Lock()
 	c.lastSeen = time.Now()
 	s.mu.Unlock()
 }
 
-// SendCommand 向指定 Agent 下发指令(供其他模块调用, 如 HTTP 触发)。
-func (s *Server) SendCommand(agentID string, cmd *pb.Command) error {
+// handleResult 把 Agent 回传的结果投递到等待通道。
+func (s *Server) handleResult(r *pb.CommandResult) {
+	s.mu.Lock()
+	ch, ok := s.results[r.CommandId]
+	if ok {
+		delete(s.results, r.CommandId)
+	}
+	s.mu.Unlock()
+	if ok {
+		ch <- r
+		log.Printf("指令结果已投递: id=%s success=%v", r.CommandId, r.Success)
+	} else {
+		log.Printf("指令结果无等待者(可能已超时): id=%s", r.CommandId)
+	}
+}
+
+// ReadConfig 向指定 Agent 下发读配置指令, 阻塞等待结果(带超时)。
+// 供 HTTP API 调用。返回 (内容, 错误)。
+func (s *Server) ReadConfig(agentID, path string, timeout time.Duration) (string, error) {
 	s.mu.RLock()
 	c, ok := s.agents[agentID]
 	s.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("agent %s 不在线", agentID)
+		return "", fmt.Errorf("agent %s 不在线", agentID)
+	}
+
+	cmdID := uuid.NewString()
+	ch := make(chan *pb.CommandResult, 1)
+	s.mu.Lock()
+	s.results[cmdID] = ch
+	s.mu.Unlock()
+	// 兜底清理: 超时后移除通道, 防止内存泄漏
+	defer func() {
+		s.mu.Lock()
+		delete(s.results, cmdID)
+		s.mu.Unlock()
+	}()
+
+	cmd := &pb.Command{
+		CommandId: cmdID,
+		Type:      "READ_CONFIG",
+		Params:    map[string]string{"path": path},
 	}
 	select {
 	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
-		return nil
 	case <-c.done:
-		return fmt.Errorf("agent %s 已断开", agentID)
-	default:
-		return fmt.Errorf("agent %s 发送通道已满", agentID)
+		return "", fmt.Errorf("agent %s 已断开", agentID)
+	case <-time.After(timeout):
+		return "", fmt.Errorf("下发指令超时")
+	}
+
+	select {
+	case r := <-ch:
+		if !r.Success {
+			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
+		}
+		return r.Output, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("等待结果超时")
 	}
 }

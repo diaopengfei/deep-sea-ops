@@ -21,7 +21,8 @@ type Client struct {
 	ip       string
 	conn     *grpc.ClientConn
 	stream   pb.AgentService_ConnectClient
-	wg       sync.WaitGroup // 等待 recvLoop 退出, 避免 goroutine 泄漏
+	streamMu sync.Mutex // 保护 stream.Send, 心跳和指令结果可能并发发送
+	wg       sync.WaitGroup
 }
 
 // New 用本机信息创建 Agent 客户端。
@@ -41,9 +42,14 @@ func New(agentID, serverAddr string) (*Client, error) {
 	}, nil
 }
 
+// send 加锁发送, gRPC stream.Send 不是并发安全的。
+func (c *Client) send(msg *pb.AgentMessage) error {
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+	return c.stream.Send(msg)
+}
+
 // Run 建立 gRPC 流, 发注册, 启动心跳和接收两个循环, 阻塞直到断开或 ctx 取消。
-// 注意: 当前版本断开后即返回, 不自动重连。生产环境靠 systemd Restart=on-failure
-// 重启进程; 进程内重连在后续版本实现。
 func (c *Client) Run(ctx context.Context) error {
 	client := pb.NewAgentServiceClient(c.conn)
 	stream, err := client.Connect(ctx)
@@ -53,7 +59,7 @@ func (c *Client) Run(ctx context.Context) error {
 	c.stream = stream
 
 	// 第一步: 发注册
-	if err := stream.Send(&pb.AgentMessage{
+	if err := c.send(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Register{
 			Register: &pb.RegisterRequest{
 				AgentId: c.agentID, Hostname: c.hostname, Ip: c.ip,
@@ -77,13 +83,11 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// 上下文取消: 主动关闭流, 让 recvLoop 的 Recv 返回错误退出
 			_ = stream.CloseSend()
 			c.wg.Wait()
 			return ctx.Err()
 		case <-ticker.C:
 			if err := c.sendHeartbeat(); err != nil {
-				// 发送失败说明流断了, 等 recvLoop 退出后返回
 				c.wg.Wait()
 				return err
 			}
@@ -92,12 +96,12 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) sendHeartbeat() error {
-	return c.stream.Send(&pb.AgentMessage{
+	return c.send(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Heartbeat{
 			Heartbeat: &pb.Heartbeat{
 				AgentId:    c.agentID,
 				Timestamp:  time.Now().UnixMilli(),
-				CpuPercent: 0, // M4 之后再接真实指标
+				CpuPercent: 0,
 				MemPercent: 0,
 			},
 		},
@@ -116,9 +120,47 @@ func (c *Client) recvLoop() {
 		case *pb.ServerMessage_RegisterAck:
 			log.Printf("注册确认: accepted=%v msg=%s", p.RegisterAck.Accepted, p.RegisterAck.Message)
 		case *pb.ServerMessage_Command:
-			log.Printf("收到指令: id=%s type=%s params=%v", p.Command.CommandId, p.Command.Type, p.Command.Params)
-			// M4 在这里执行真实指令并回传 CommandResult
+			// 指令执行放独立 goroutine, 不阻塞接收后续消息(读大文件可能慢)
+			c.wg.Add(1)
+			go func(cmd *pb.Command) {
+				defer c.wg.Done()
+				c.executeCommand(cmd)
+			}(p.Command)
 		}
+	}
+}
+
+// executeCommand 执行单条指令并回传结果。
+// 目前支持 READ_CONFIG: 读 params["path"] 指定的文件内容。
+func (c *Client) executeCommand(cmd *pb.Command) {
+	result := &pb.CommandResult{CommandId: cmd.CommandId}
+
+	switch cmd.Type {
+	case "READ_CONFIG":
+		path := cmd.Params["path"]
+		if path == "" {
+			result.Success = false
+			result.Error = "缺少参数 path"
+		} else {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				result.Success = false
+				result.Error = err.Error()
+			} else {
+				result.Success = true
+				result.Output = string(content)
+			}
+		}
+		log.Printf("执行 READ_CONFIG path=%s success=%v", path, result.Success)
+	default:
+		result.Success = false
+		result.Error = "未知指令类型: " + cmd.Type
+	}
+
+	if err := c.send(&pb.AgentMessage{
+		Payload: &pb.AgentMessage_Result{Result: result},
+	}); err != nil {
+		log.Printf("回传指令结果失败: %v", err)
 	}
 }
 
