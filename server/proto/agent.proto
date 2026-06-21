@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package deepsea.agent;
+
+option go_package = "github.com/deepsea-ops/server/internal/proto/agent";
+
+// AgentService 是 Agent 与控制面之间的双向流通信服务。
+// Agent 连上后, 双方在同一条流上互发消息。
+service AgentService {
+  // Connect: Agent 主动连控制面, 之后双向收发。
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+}
+
+// AgentMessage: Agent 发给控制面的消息(上行)。
+// 用 oneof 区分消息类型, 一条消息只能是其中一种。
+message AgentMessage {
+  oneof payload {
+    Heartbeat heartbeat = 1;       // 心跳: 定期上报存活 + 基本信息
+    RegisterRequest register = 2;  // 注册: 连上后的第一条, 自报家门
+    CommandResult result = 3;      // 指令执行结果
+  }
+}
+
+// ServerMessage: 控制面发给 Agent 的消息(下行)。
+message ServerMessage {
+  oneof payload {
+    RegisterAck register_ack = 1;  // 注册确认
+    Command command = 2;           // 下发指令
+  }
+}
+
+// --- 上行消息体 ---
+
+// RegisterRequest: Agent 首次连接时上报自己的身份。
+message RegisterRequest {
+  string agent_id = 1;   // Agent 唯一 ID
+  string hostname = 2;   // 主机名
+  string ip = 3;         // 本机 IP
+}
+
+// Heartbeat: 定期心跳, 告诉控制面"我还活着"。
+message Heartbeat {
+  string agent_id = 1;
+  int64 timestamp = 2;   // Unix 毫秒
+  double cpu_percent = 3; // CPU 使用率(后续填真实值)
+  double mem_percent = 4; // 内存使用率
+}
+
+// CommandResult: Agent 执行完指令后回传结果。
+message CommandResult {
+  string command_id = 1;  // 对应下发指令的 ID
+  bool success = 2;
+  string output = 3;      // 输出内容
+  string error = 4;       // 失败原因
+}
+
+// --- 下行消息体 ---
+
+message RegisterAck {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// Command: 控制面下发给 Agent 的指令。
+// 现在只有 READ_CONFIG(读配置文件), 以后扩展。
+message Command {
+  string command_id = 1;
+  string type = 2;         // 指令类型: READ_CONFIG 等
+  map<string, string> params = 3; // 指令参数
+}

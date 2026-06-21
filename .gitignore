@@ -1,17 +1,23 @@
 # Go 构建缓存与产物(任意层级)
 **/.cache/
 *.exe
+deepsea-server.exe
+deepsea-agent.exe
 
 # Raft 运行时数据(日志/快照, 不提交)
 server/raft-data/
+
+# 运行时日志
+*.log
+server.log
+server.err.log
+agent.log
+agent.err.log
 
 # 前端
 node_modules/
 dist/
 web/dist/
-
-# 杂项
-*.log
 
 # 编辑器配置
 .idea/

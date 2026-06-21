@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/model"
 	"github.com/deepsea-ops/server/internal/store"
 )
 
-// New 构造 HTTP 路由, 把 Store 注入到 handler 里。
-// 用闭包而不是全局变量传递依赖, 这是 Go 里常见的轻量依赖注入方式。
-// 首字母大写 New 表示这是包的导出 API(外部可调), Go 按首字母大小写决定可见性。
-func New(s *store.Store) http.Handler {
+// New 构造 HTTP 路由, 注入 store 和 grpcServer。
+func New(s *store.Store, gs *grpcserver.Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/servers", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -22,6 +21,15 @@ func New(s *store.Store) http.Handler {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	})
+	// Agent 在线列表(来自 gRPC 注册表)
+	mux.HandleFunc("/api/agents", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(gs.ListAgents())
 	})
 	return mux
 }
