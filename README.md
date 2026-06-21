@@ -1,113 +1,141 @@
 # deepsea-ops
 
-鍒嗗竷寮忔湇鍔″櫒杩愮淮骞冲彴 鈥斺€?鐢ㄤ竴濂楀伐鍏风鐞?20+ 鍙版湇鍔″櫒涓婄殑 Java 寰湇鍔°€丣ava/Python 绋嬪簭銆丷edis銆丳ostgreSQL銆並afka銆丒lasticsearch銆丆lickHouse銆丯acos銆?
-> 鐘舵€? 鏃╂湡寮€鍙戜腑(v0.1)銆傞鏈熻仛鐒?Java 寰湇鍔＄殑閰嶇疆绠＄悊涓庢墿瀹硅縼绉汇€?
-## 涓轰粈涔堥€犲畠
+分布式服务器运维平台 —— 用一套工具管理 20+ 台服务器上的 Java 微服务、Java/Python 程序、Redis、PostgreSQL、Kafka、Elasticsearch、ClickHouse、Nacos。
 
-绠＄悊 20+ 鍙版湇鍔″櫒涓婄殑澶氱被涓棿浠跺拰鏈嶅姟, 浼犵粺鏂瑰紡闈?SSH + 鑴氭湰 + Excel, 閰嶇疆婕傜Щ銆佹墿瀹圭箒鐞愩€佽縼绉婚闄╅珮銆俤eepsea-ops 鐢ㄤ竴濂楀垎甯冨紡鎺у埗闈㈢粺涓€绠＄悊: 閰嶇疆涓€澶勭淮鎶ゃ€佹瘮瀵逛竴鐩簡鐒躲€佹墿瀹硅縼绉讳竴閿紪鎺? 涓斾换鎰忚妭鐐瑰彲璁块棶銆佹晠闅滆嚜鍔ㄥ垏鎹€?
-## 鐗规€?
-- **鍒嗗竷寮忔帶鍒堕潰**: 3 鑺傜偣 Raft 寮轰竴鑷撮泦缇? 瀹瑰繊 1 鑺傜偣鏁呴殰, 绉掔骇 Leader 鍒囨崲
-- **Agent 鏋舵瀯**: 姣忓彴琚鏈哄櫒璺戣交閲?Agent, gRPC 闀胯繛鎺? 蹇冭烦 + 鎸囦护涓嬪彂
-- **閰嶇疆娌荤悊**: 杩炴帴 Nacos / 鏈湴閰嶇疆 / jar 鍐呴厤缃? 涓夋柟姣斿, 鍩哄噯鐗堟湰璧?Raft
-- **鎵╁杩佺Щ**: Leader 缂栨帓, 涓嬪彂閮ㄧ讲鎸囦护鍒扮洰鏍?Agent, 鐘舵€佸疄鏃跺洖浼?- **鍙鍖?*: 鏈嶅姟鍣?鏈嶅姟鎷撴墤鍥?AntV G6), 璧勬簮鐩戞帶(ECharts), 閰嶇疆 diff(Monaco)
-- **鍗曚簩杩涘埗閮ㄧ讲**: Go 浜ゅ弶缂栬瘧, Agent 鎺ㄩ€佸嵆璺? 鎺у埗闈㈣嚜甯﹀墠绔?embed)
+> 状态: 早期开发中(v0.1)。首期聚焦 Java 微服务的配置管理与扩容迁移。
 
-## 鏋舵瀯
+## 为什么造它
+
+管理 20+ 台服务器上的多类中间件和服务, 传统方式靠 SSH + 脚本 + Excel, 配置漂移、扩容繁琐、迁移风险高。deepsea-ops 用一套分布式控制面统一管理: 配置一处维护、比对一目了然、扩容迁移一键编排, 且任意节点可访问、故障自动切换。
+
+## 特性
+
+- **分布式控制面**: 3 节点 Raft 强一致集群, 容忍 1 节点故障, 秒级 Leader 切换
+- **Agent 架构**: 每台被管机器跑轻量 Agent, gRPC 长连接, 心跳 + 指令下发
+- **配置治理**: 连接 Nacos / 本地配置 / jar 内配置, 三方比对, 基准版本走 Raft
+- **扩容迁移**: Leader 编排, 下发部署指令到目标 Agent, 状态实时回传
+- **可视化**: 服务器/服务拓扑图(AntV G6), 资源监控(ECharts), 配置 diff(Monaco)
+- **单二进制部署**: Go 交叉编译, Agent 推送即跑, 控制面自带前端(embed)
+
+## 架构
 
 ```
-                鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?   娴忚鍣?鈹€鈹€鈹€鈹€鈹€鈻垛攤  鎺у埗闈?(3 鑺傜偣 Raft)          鈹?                鈹? HTTP:8080  gRPC:9090  Raft:7000 鈹?                鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?                  gRPC 闀胯繛 鈹?蹇冭烦 + 鎸囦护
-            鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?            鈻?             鈻?             鈻?       Agent@宸ヤ綔鏈?   Agent@宸ヤ綔鏈?  ... Agent@宸ヤ綔鏈篘
+                ┌──────────────────────────────┐
+   浏览器 ─────▶│  控制面 (3 节点 Raft)          │
+                │  HTTP:8080  gRPC:9090  Raft:7000 │
+                └──────────┬───────────────────┘
+                  gRPC 长连 │ 心跳 + 指令
+            ┌──────────────┼──────────────┐
+            ▼              ▼              ▼
+       Agent@工作机1   Agent@工作机2  ... Agent@工作机N
 ```
 
-鎺у埗闈㈢敤 Raft 淇濊瘉寮轰竴鑷?閰嶇疆銆侀儴缃茶鍒?, Agent 鍦ㄧ嚎鐘舵€佽蛋鍐呭瓨(楂橀鐬椂鏁版嵁涓嶄粯涓€鑷存€ф垚鏈?銆傝瑙佹灦鏋勮璁℃枃妗ｃ€?
-## 鎶€鏈爤
+控制面用 Raft 保证强一致(配置、部署计划), Agent 在线状态走内存(高频瞬时数据不付一致性成本)。
 
-| 灞?| 鎶€鏈?|
+## 技术栈
+
+| 层 | 技术 |
 |----|------|
-| 鍚庣 | Go 1.22+, hashicorp/raft, bbolt, gRPC |
-| 鍓嶇 | Vue 3, TypeScript, Vite, Element Plus, ECharts, AntV G6 |
-| 閰嶇疆缂栬緫 | Monaco Editor |
+| 后端 | Go 1.22+, hashicorp/raft, bbolt, gRPC |
+| 前端 | Vue 3, TypeScript, Vite, Element Plus, ECharts, AntV G6 |
+| 配置编辑 | Monaco Editor |
 
-## 蹇€熷紑濮?
-### 鐜瑕佹眰
+## 快速开始
+
+### 环境要求
 
 - Go 1.22+
 - Node.js 18+
 - Git
 
-### 鏋勫缓
+### 构建
 
 ```bash
-# 鍚庣(鎺у埗闈?+ Agent)
+# 构建全部(后端 + 前端, 当前平台)
+make build         # 产出 dist/deepsea-server, dist/deepsea-agent, web/dist/
+
+# 单独构建
+make server        # 仅控制面 -> dist/deepsea-server
+make agent         # 仅 Agent -> dist/deepsea-agent
+make web           # 仅前端 -> web/dist/
+```
+
+### 构建 Linux 版本(在 Windows/Mac 开发机上交叉编译)
+
+部署到 Linux 服务器时, 无需在 Linux 上安装 Go, 直接交叉编译:
+
+```bash
+# 只构建后端 Linux 二进制
+make cross-linux          # 产出 dist/deepsea-server 和 dist/deepsea-agent (ELF, 纯静态)
+
+# 后端 + 前端一起构建(部署用)
+make build-linux          # = cross-linux + web, 产出 dist/ 和 web/dist/
+```
+
+产出的是纯静态 ELF 二进制(`CGO_ENABLED=0`), 任意 Linux 发行版直接 `./deepsea-server` 即可运行, 无 glibc 版本依赖。完整部署流程见部署指南文档。
+
+### 本地运行(开发模式)
+
+```bash
+# 终端 1: 控制面
 cd server
-go build -o ../dist/deepsea-server ./cmd/server
-go build -o ../dist/deepsea-agent ./cmd/agent
-
-# 鍓嶇
-cd ../web
-npm install
-npm run build      # 浜х墿 web/dist/
-```
-
-鎴栫敤鏍圭洰褰?Makefile:
-
-```bash
-make build         # 鏋勫缓鍏ㄩ儴鍒?dist/
-```
-
-### 鏈湴杩愯(寮€鍙戞ā寮?
-
-```bash
-# 缁堢 1: 鎺у埗闈?cd server
 go run ./cmd/server
 
-# 缁堢 2: Agent
+# 终端 2: Agent
 cd server
 go run ./cmd/agent -id agent-1 -server 127.0.0.1:9090
 
-# 缁堢 3: 鍓嶇
+# 终端 3: 前端
 cd web
 npm run dev        # http://localhost:5173
 ```
 
-鎵撳紑 `http://localhost:5173`, 宸︿晶"鏈嶅姟鍣ㄧ鐞?鏂板鏈嶅姟鍣? "Agent 鑺傜偣"鏌ョ湅鍦ㄧ嚎 Agent銆?
-## 椤圭洰缁撴瀯
+打开 `http://localhost:5173`, 左侧"服务器管理"新增服务器, "Agent 节点"查看在线 Agent 并可读取其配置文件。
+
+## 项目结构
 
 ```
 deep-sea-ops/
-鈹溾攢鈹€ server/                  Go 鍚庣
-鈹?  鈹溾攢鈹€ cmd/
-鈹?  鈹?  鈹溾攢鈹€ server/          鎺у埗闈㈠叆鍙?鈹?  鈹?  鈹斺攢鈹€ agent/           Agent 鍏ュ彛
-鈹?  鈹溾攢鈹€ internal/            绉佹湁鍖?澶栭儴涓嶅彲 import)
-鈹?  鈹?  鈹溾攢鈹€ model/           棰嗗煙妯″瀷
-鈹?  鈹?  鈹溾攢鈹€ store/           Raft 瀛樺偍灞?FSM/Store)
-鈹?  鈹?  鈹溾攢鈹€ api/             HTTP 璺敱
-鈹?  鈹?  鈹溾攢鈹€ grpcserver/      Agent 杩炴帴绠＄悊
-鈹?  鈹?  鈹溾攢鈹€ agentclient/     Agent 绔繛鎺ラ€昏緫
-鈹?  鈹?  鈹斺攢鈹€ proto/agent/     protoc 鐢熸垚浠ｇ爜
-鈹?  鈹斺攢鈹€ proto/agent.proto    gRPC 濂戠害
-鈹溾攢鈹€ web/                     Vue 鍓嶇
-鈹?  鈹斺攢鈹€ src/{api,views,styles}/
-鈹溾攢鈹€ Makefile                 鏋勫缓鑴氭湰
-鈹斺攢鈹€ dist/                    鏋勫缓浜х墿(gitignore)
+├── server/                  Go 后端
+│   ├── cmd/
+│   │   ├── server/          控制面入口
+│   │   └── agent/           Agent 入口
+│   ├── internal/            私有包(外部不可 import)
+│   │   ├── model/           领域模型
+│   │   ├── store/           Raft 存储层(FSM/Store)
+│   │   ├── api/             HTTP 路由
+│   │   ├── grpcserver/      Agent 连接管理
+│   │   ├── agentclient/     Agent 端连接逻辑
+│   │   └── proto/agent/     protoc 生成代码
+│   └── proto/agent.proto    gRPC 契约
+├── web/                     Vue 前端
+│   └── src/{api,views,styles}/
+├── Makefile                 构建脚本
+└── dist/                    构建产物(gitignore)
 ```
 
-## 閮ㄧ讲
+## 部署
 
-鐢熶骇閮ㄧ讲鍒?Linux 闆嗙兢瑙侀儴缃叉寚鍗楁枃妗? 浜ゅ弶缂栬瘧銆乻ystemd銆乶ginx銆丄gent 鎵归噺閮ㄧ讲銆佹粴鍔ㄥ崌绾с€?
-## 璺嚎鍥?
-- **v0.1** 鍗曡妭鐐规帶鍒堕潰 + Agent 楠ㄦ灦 鉁?(M1-M3 瀹屾垚, M4 杩涜涓?
-  - Raft 鍗曡妭鐐瑰瓨鍌ㄣ€乥bolt 鎸佷箙鍖栥€乬RPC 鍙屽悜娴併€丄gent 蹇冭烦
-- **v0.2** 3 鑺傜偣瀹归敊闆嗙兢
-- **v0.3** Java 杩愮淮 MVP(閰嶇疆姣斿銆佹墿瀹硅縼绉汇€佹嫇鎵戝彲瑙嗗寲)
-- **v0.4** 鍒嗗竷寮忛儴缃茶兘鍔?bootstrap 鑷姩鍖栥€佸叆鍙ｄ唬鐞嗐€佸畨鍏ㄥ姞鍥?
+生产部署到 Linux 集群见部署指南文档: 交叉编译、systemd、nginx、Agent 批量部署、滚动升级。
 
-## 寮€鍙?
+## 路线图
+
+- **v0.1** 单节点控制面 + Agent 骨架 ✅ (M1-M4 完成)
+  - Raft 单节点存储、bbolt 持久化、gRPC 双向流、Agent 心跳、读配置回传
+- **v0.2** 3 节点容错集群
+- **v0.3** Java 运维 MVP(配置比对、扩容迁移、拓扑可视化)
+- **v0.4** 分布式部署能力(bootstrap 自动化、入口代理、安全加固)
+
+## 开发
+
 ```bash
 git clone <repo>
 cd deepsea-ops
-make dev         # 鍚姩鍚庣 + 鍓嶇寮€鍙戞湇鍔?```
+make dev         # 启动后端 + 前端开发服务
+```
 
-浠ｇ爜瑙勮寖: Go 鐢?`gofmt`/`go vet`; 鍓嶇鐢?TypeScript strict銆傛彁浜ゅ墠 `make check`銆?
-## 璁稿彲璇?
+代码规范: Go 用 `gofmt`/`go vet`; 前端用 TypeScript strict。提交前 `make check`。
+
+## 许可证
+
 MIT
