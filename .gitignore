@@ -1,12 +1,15 @@
-# Go 构建缓存与本地产物
-server/.cache/
+# Go 构建缓存与产物
+.cache/
+*.exe
 server/deepsea-server.exe
+
+# Raft 运行时数据(日志/快照, 不提交)
+server/raft-data/
+
+# 前端
 node_modules/
 dist/
-frontend/dist/
-frontend/node_modules/
+web/dist/
+
+# 杂项
 *.log
-*.db
-*.snap
-go.sum
-**/go.sum
