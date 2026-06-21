@@ -1,16 +1,19 @@
-package main
+package api
 
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/deepsea-ops/server/internal/model"
+	"github.com/deepsea-ops/server/internal/store"
 )
 
-// newAPI 构造 HTTP 路由, 把 Store 注入到 handler 里。
+// New 构造 HTTP 路由, 把 Store 注入到 handler 里。
 // 用闭包而不是全局变量传递依赖, 这是 Go 里常见的轻量依赖注入方式。
-func newAPI(s *Store) http.Handler {
+// 首字母大写 New 表示这是包的导出 API(外部可调), Go 按首字母大小写决定可见性。
+func New(s *store.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/servers", func(w http.ResponseWriter, r *http.Request) {
-		// 根据请求方法分发: GET 列表, POST 新增
 		switch r.Method {
 		case http.MethodGet:
 			handleListServers(w, s)
@@ -23,14 +26,13 @@ func newAPI(s *Store) http.Handler {
 	return mux
 }
 
-func handleListServers(w http.ResponseWriter, s *Store) {
+func handleListServers(w http.ResponseWriter, s *store.Store) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s.ListServers())
 }
 
-// handleAddServer 解析请求体里的 Server JSON, 调 Store.AddServer 走 Raft 写入。
-func handleAddServer(w http.ResponseWriter, r *http.Request, s *Store) {
-	var srv Server
+func handleAddServer(w http.ResponseWriter, r *http.Request, s *store.Store) {
+	var srv model.Server
 	if err := json.NewDecoder(r.Body).Decode(&srv); err != nil {
 		http.Error(w, "请求体格式错误: "+err.Error(), http.StatusBadRequest)
 		return
@@ -43,7 +45,6 @@ func handleAddServer(w http.ResponseWriter, r *http.Request, s *Store) {
 		srv.Status = "offline"
 	}
 
-	// 这里调 Store.AddServer, 内部会走 raft.Apply -> FSM.Apply
 	if err := s.AddServer(srv); err != nil {
 		http.Error(w, "写入失败: "+err.Error(), http.StatusInternalServerError)
 		return

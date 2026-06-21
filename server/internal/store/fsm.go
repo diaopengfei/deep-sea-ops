@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"encoding/gob"
@@ -9,17 +9,19 @@ import (
 	"sync"
 
 	"github.com/hashicorp/raft"
+
+	"github.com/deepsea-ops/server/internal/model"
 )
 
 // FSM 是状态机。Raft 负责把命令按顺序可靠地送达, FSM 负责收到命令后真正改状态。
 // 必须实现 raft.FSM 接口的三个方法: Apply / Snapshot / Restore。
 type FSM struct {
-	mu      sync.RWMutex      // 保护下面的 map, 因为 Apply 和 List 可能并发
-	servers map[string]Server // 内存存储, key 是 Server.ID
+	mu      sync.RWMutex            // 保护下面的 map, 因为 Apply 和 List 可能并发
+	servers map[string]model.Server // 内存存储, key 是 Server.ID
 }
 
 func NewFSM() *FSM {
-	return &FSM{servers: make(map[string]Server)}
+	return &FSM{servers: make(map[string]model.Server)}
 }
 
 // Apply 在 Raft 确认一条命令后被回调。l.Data 就是我们传给 raft.Apply 的字节。
@@ -45,10 +47,10 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 }
 
 // List 是业务方法, 供 API 读取当前状态。读直接走内存, 不过 Raft。
-func (f *FSM) List() []Server {
+func (f *FSM) List() []model.Server {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	out := make([]Server, 0, len(f.servers))
+	out := make([]model.Server, 0, len(f.servers))
 	for _, s := range f.servers {
 		out = append(out, s)
 	}
@@ -58,14 +60,14 @@ func (f *FSM) List() []Server {
 // --- Snapshot / Restore ---
 
 type snapshotData struct {
-	Servers map[string]Server
+	Servers map[string]model.Server
 }
 
 // Snapshot 打包当前状态, 供 Raft 压缩日志和给新节点同步用。
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	clone := make(map[string]Server, len(f.servers))
+	clone := make(map[string]model.Server, len(f.servers))
 	for k, v := range f.servers {
 		clone[k] = v
 	}
