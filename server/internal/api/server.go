@@ -34,7 +34,6 @@ func New(s *store.Store, gs *grpcserver.Server) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(gs.ListAgents())
 	})
-	// /api/agents/{id}/read-config : 触发 Agent 读取本地配置文件
 	mux.HandleFunc("/api/agents/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if strings.HasSuffix(path, "/read-config") && r.Method == http.MethodPost {
@@ -42,6 +41,22 @@ func New(s *store.Store, gs *grpcserver.Server) http.Handler {
 			return
 		}
 		http.NotFound(w, r)
+	})
+	// 集群管理: 查询状态 / 加入新节点
+	mux.HandleFunc("/api/cluster/info", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.ClusterInfo())
+	})
+	mux.HandleFunc("/api/cluster/join", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handleClusterJoin(w, r, s)
 	})
 	return mux
 }
@@ -74,17 +89,13 @@ func handleAddServer(w http.ResponseWriter, r *http.Request, s *store.Store) {
 	json.NewEncoder(w).Encode(srv)
 }
 
-// handleReadConfig: 从 URL 解析 agent ID, 从请求体取 path, 调 grpcServer 下发指令。
-// URL 形如 /api/agents/{id}/read-config
 func handleReadConfig(w http.ResponseWriter, r *http.Request, gs *grpcserver.Server) {
-	// 解析 agentID: 去掉前缀 /api/agents/ 和后缀 /read-config
 	trimmed := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 	agentID := strings.TrimSuffix(trimmed, "/read-config")
 	if agentID == "" || strings.Contains(agentID, "/") {
 		http.Error(w, "无效的 agent ID", http.StatusBadRequest)
 		return
 	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req struct {
 		Path string `json:"path"`
@@ -97,7 +108,6 @@ func handleReadConfig(w http.ResponseWriter, r *http.Request, gs *grpcserver.Ser
 		http.Error(w, "path 不能为空", http.StatusBadRequest)
 		return
 	}
-
 	content, err := gs.ReadConfig(agentID, req.Path, 10*time.Second)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -110,4 +120,28 @@ func handleReadConfig(w http.ResponseWriter, r *http.Request, gs *grpcserver.Ser
 		"path":    req.Path,
 		"content": content,
 	})
+}
+
+// handleClusterJoin: Leader 把一个新节点 AddVoter 纳入集群。
+// 请求体: {"id":"node2","addr":"127.0.0.1:7001"}
+func handleClusterJoin(w http.ResponseWriter, r *http.Request, s *store.Store) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	var req struct {
+		ID   string `json:"id"`
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "请求体格式错误: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" || req.Addr == "" {
+		http.Error(w, "id/addr 不能为空", http.StatusBadRequest)
+		return
+	}
+	if err := s.AddVoter(req.ID, req.Addr); err != nil {
+		http.Error(w, "加入集群失败: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": req.ID})
 }
