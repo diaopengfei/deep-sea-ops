@@ -130,7 +130,7 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
 				auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "path 不能为空"})
 				return
 			}
-			result, err := gs.ReadConfig(agentID, req.Path, 15*time.Second)
+			result, err := gs.ReadConfig(agentID, req.Path, 30*time.Second)
 			if err != nil {
 				auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
@@ -145,6 +145,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
 				NacosDataID    string `json:"nacosDataId"`
 				NacosGroup     string `json:"nacosGroup"`
 				NacosNamespace string `json:"nacosNamespace"`
+				NacosUsername   string `json:"nacosUsername"`
+				NacosPassword   string `json:"nacosPassword"`
+				NacosAccessToken string `json:"nacosAccessToken"`
 				LocalPath      string `json:"localPath"`
 				JarPath        string `json:"jarPath"`
 				JarEntry       string `json:"jarEntry"`
@@ -159,6 +162,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
 				"nacosDataId":    req.NacosDataID,
 				"nacosGroup":     req.NacosGroup,
 				"nacosNamespace": req.NacosNamespace,
+				"nacosUsername":   req.NacosUsername,
+				"nacosPassword":   req.NacosPassword,
+				"nacosAccessToken": req.NacosAccessToken,
 				"localPath":      req.LocalPath,
 				"jarPath":        req.JarPath,
 				"jarEntry":       req.JarEntry,

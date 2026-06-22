@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="config-diff">
     <el-card header="配置比对">
       <el-form :model="form" label-width="140px" label-position="right">
@@ -18,6 +18,18 @@
         </el-form-item>
         <el-form-item label="Group">
           <el-input v-model="form.nacosGroup" placeholder="DEFAULT_GROUP" style="width: 240px" />
+        </el-form-item>
+        <el-form-item label="命名空间">
+          <el-input v-model="form.nacosNamespace" placeholder="留空=public" style="width: 240px" />
+        </el-form-item>
+        <el-form-item label="用户名">
+          <el-input v-model="form.nacosUsername" placeholder="Nacos 开启鉴权时填写" style="width: 200px" />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="form.nacosPassword" type="password" show-password placeholder="Nacos 开启鉴权时填写" style="width: 200px" />
+        </el-form-item>
+        <el-form-item label="AccessToken">
+          <el-input v-model="form.nacosAccessToken" placeholder="已有 token 可直接填, 跳过登录" style="width: 320px" />
         </el-form-item>
 
         <el-divider content-position="left">本地配置文件</el-divider>
@@ -106,6 +118,9 @@ const form = reactive({
   nacosAddr: '',
   nacosDataId: '',
   nacosGroup: 'DEFAULT_GROUP',
+  nacosUsername: '',
+  nacosPassword: '',
+  nacosAccessToken: '',
   localPath: '',
   jarPath: '',
   jarEntry: 'BOOT-INF/classes/application.yml'
@@ -127,7 +142,7 @@ async function onCompare() {
   loading.value = true
   report.value = null
   try {
-    report.value = await configDiff(form)
+    report.value = await configDiff(form.agentId, form)
     ElMessage.success('比对完成')
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || e.message || '比对失败')

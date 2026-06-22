@@ -1,4 +1,4 @@
-﻿package agentclient
+package agentclient
 
 import (
 	"archive/zip"
@@ -15,10 +15,16 @@ import (
 // 控制面下发 COLLECT_CONFIGS 指令时, 把这些信息放在 params 里。
 type ConfigSources struct {
 	// Nacos 配置: dataId + group + namespace + nacos 地址
-	NacosAddr    string `json:"nacosAddr"`
-	NacosDataID  string `json:"nacosDataId"`
-	NacosGroup   string `json:"nacosGroup"`
+	NacosAddr      string `json:"nacosAddr"`
+	NacosDataID    string `json:"nacosDataId"`
+	NacosGroup     string `json:"nacosGroup"`
 	NacosNamespace string `json:"nacosNamespace"` // 空 = public 命名空间
+
+	// Nacos 认证(生产环境通常开启鉴权):
+	// 优先用 accessToken; 没有则用 username/password 登录获取。
+	NacosAccessToken string `json:"nacosAccessToken"`
+	NacosUsername    string `json:"nacosUsername"`
+	NacosPassword    string `json:"nacosPassword"`
 
 	// 本地配置文件路径(如 /opt/app/application.yml)
 	LocalPath string `json:"localPath"`
@@ -32,12 +38,12 @@ type ConfigSources struct {
 // ConfigSnapshot 是采集结果: 三类配置各自的内容 + 采集错误。
 // 采集器对每个源独立采集, 一个失败不影响其他, 错误记录在对应字段。
 type ConfigSnapshot struct {
-	Nacos  string `json:"nacos"`   // Nacos 配置内容, 失败则为空
-	Local  string `json:"local"`   // 本地文件内容
-	Jar    string `json:"jar"`     // jar 内配置内容
-	NacosErr  string `json:"nacosErr"`
-	LocalErr  string `json:"localErr"`
-	JarErr    string `json:"jarErr"`
+	Nacos    string `json:"nacos"`
+	Local    string `json:"local"`
+	Jar      string `json:"jar"`
+	NacosErr string `json:"nacosErr"`
+	LocalErr string `json:"localErr"`
+	JarErr   string `json:"jarErr"`
 }
 
 // CollectConfigs 根据配置源描述, 采集三类配置, 返回快照。
@@ -69,9 +75,23 @@ func CollectConfigs(src ConfigSources) ConfigSnapshot {
 }
 
 // fetchNacosConfig 调 Nacos OpenAPI 拉配置。
-// Nacos 的配置查询接口: GET /nacos/v1/cs/configs?dataId=xx&group=xx
+// 认证策略: 有 accessToken 直接带; 否则用 username/password 登录获取 token; 都没有则裸调(适用于未开鉴权的 Nacos)。
 func fetchNacosConfig(src ConfigSources) (string, string) {
-	url := strings.TrimRight(src.NacosAddr, "/") + "/nacos/v1/cs/configs"
+	baseURL := strings.TrimRight(src.NacosAddr, "/")
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
+	// 确定 accessToken: 优先用传入的, 没有则登录获取
+	token := src.NacosAccessToken
+	if token == "" && src.NacosUsername != "" && src.NacosPassword != "" {
+		var err string
+		token, err = nacosLogin(httpClient, baseURL, src.NacosUsername, src.NacosPassword)
+		if err != "" {
+			return "", "Nacos 登录失败: " + err
+		}
+	}
+
+	// 构造配置查询请求: GET /nacos/v1/cs/configs?dataId=xx&group=xx[&tenant=xx][&accessToken=xx]
+	url := baseURL + "/nacos/v1/cs/configs"
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err.Error()
@@ -82,10 +102,12 @@ func fetchNacosConfig(src ConfigSources) (string, string) {
 	if src.NacosNamespace != "" {
 		q.Set("tenant", src.NacosNamespace)
 	}
+	if token != "" {
+		q.Set("accessToken", token)
+	}
 	req.URL.RawQuery = q.Encode()
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", "连接 Nacos 失败: " + err.Error()
 	}
@@ -98,6 +120,42 @@ func fetchNacosConfig(src ConfigSources) (string, string) {
 		return "", err.Error()
 	}
 	return string(body), ""
+}
+
+// nacosLogin 用 username/password 调 Nacos 登录接口获取 accessToken。
+// Nacos 登录接口: POST /nacos/v1/auth/login (表单: username, password)
+func nacosLogin(client *http.Client, baseURL, username, password string) (string, string) {
+	url := baseURL + "/nacos/v1/auth/login"
+	req, err := http.NewRequest("POST", url, strings.NewReader("username="+username+"&password="+password))
+	if err != nil {
+		return "", err.Error()
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err.Error()
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Sprintf("登录返回 %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err.Error()
+	}
+
+	// Nacos 登录响应: {"accessToken":"xxx","tokenTtl":...", ...}
+	var result struct {
+		AccessToken string `json:"accessToken"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", "解析登录响应失败: " + err.Error()
+	}
+	if result.AccessToken == "" {
+		return "", "登录响应中无 accessToken"
+	}
+	return result.AccessToken, ""
 }
 
 // readJarEntry 从 jar(zip)包内读取指定 entry 的内容。
@@ -139,5 +197,3 @@ func snapshotFromJSON(s string) (ConfigSnapshot, error) {
 	err := json.Unmarshal([]byte(s), &snap)
 	return snap, err
 }
-
-// 占位: 避免未导入 filepath 的编译错误(jar 读取后续可能用到)

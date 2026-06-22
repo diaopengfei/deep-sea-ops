@@ -8,6 +8,9 @@ export interface ConfigDiffReq {
   nacosDataId?: string
   nacosGroup?: string
   nacosNamespace?: string
+  nacosUsername?: string
+  nacosPassword?: string
+  nacosAccessToken?: string
   localPath?: string
   jarPath?: string
   jarEntry?: string

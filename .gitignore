@@ -27,3 +27,5 @@ docs/
 # 操作系统杂物
 .DS_Store
 Thumbs.db
+web/vite.err
+web/vite.log
