@@ -1,4 +1,4 @@
-package agentclient
+﻿package agentclient
 
 import (
 	"archive/zip"
@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -142,4 +141,3 @@ func snapshotFromJSON(s string) (ConfigSnapshot, error) {
 }
 
 // 占位: 避免未导入 filepath 的编译错误(jar 读取后续可能用到)
-var _ = filepath.Join
