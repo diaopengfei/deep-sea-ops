@@ -106,8 +106,10 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { listAgents, configDiff } from '../api/server'
-import type { AgentInfo, DiffReport } from '../api/types'
+import { listAgents } from '../api/server'
+import { configDiff } from '../api/config'
+import type { AgentInfo } from '../api/types'
+import type { DiffReport } from '../api/config'
 
 const agents = ref<AgentInfo[]>([])
 const loading = ref(false)

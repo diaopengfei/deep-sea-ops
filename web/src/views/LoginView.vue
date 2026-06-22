@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="login-container">
     <el-card class="login-card">
       <template #header>
@@ -26,7 +26,7 @@
 import { reactive, ref } from 'vue'
 import { User, Lock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { login, saveToken } from '../api/auth'
+import { login, setToken } from '../api/auth'
 
 // 通知父组件登录成功, 由父组件切换到主界面
 const emit = defineEmits<{ (e: 'success'): void }>()
@@ -42,7 +42,7 @@ async function onLogin() {
   loading.value = true
   try {
     const resp = await login(form.username, form.password)
-    saveToken(resp.accessToken, resp.refreshToken)
+    setToken(resp.accessToken, resp.refreshToken)
     ElMessage.success('登录成功')
     emit('success')
   } catch (e: any) {
