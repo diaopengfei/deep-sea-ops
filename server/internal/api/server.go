@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/deepsea-ops/server/internal/auth"
+	"github.com/deepsea-ops/server/internal/configdiff"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/model"
 	"github.com/deepsea-ops/server/internal/store"
@@ -99,40 +100,81 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
 		auth.WriteJSON(w, http.StatusOK, gs.ListAgents())
 	}))
 
-	// Agent 读配置: POST /api/agents/{id}/read-config
+	// Agent 操作: /api/agents/{id}/read-config, /api/agents/{id}/config-diff
 	mux.HandleFunc("/api/agents/", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		// 解析路径: /api/agents/{id}/read-config
+		// 解析路径: /api/agents/{id}/{action}
 		path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 		parts := strings.Split(path, "/")
-		if len(parts) != 2 || parts[1] != "read-config" {
+		if len(parts) != 2 {
 			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知路径"})
 			return
 		}
 		agentID := parts[0]
+		action := parts[1]
 
-		var req struct {
-			Path string `json:"path"`
-		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
-			auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体格式错误"})
-			return
-		}
-		if req.Path == "" {
-			auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "path 不能为空"})
-			return
-		}
+		switch action {
+		case "read-config":
+			// 读单个配置文件: { path: "/opt/app/application.yml" }
+			var req struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+				auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体格式错误"})
+				return
+			}
+			if req.Path == "" {
+				auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "path 不能为空"})
+				return
+			}
+			result, err := gs.ReadConfig(agentID, req.Path, 15*time.Second)
+			if err != nil {
+				auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			auth.WriteJSON(w, http.StatusOK, map[string]string{"content": result})
 
-		// 下发读配置指令并等待回传(超时 15 秒)
-		result, err := gs.ReadConfig(agentID, req.Path, 15*time.Second)
-		if err != nil {
-			auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		case "config-diff":
+			// 配置比对: 采集 Nacos/本地/jar 三路配置并 diff
+			// 请求体: { nacosAddr, nacosDataId, nacosGroup, nacosNamespace, localPath, jarPath, jarEntry }
+			var req struct {
+				NacosAddr      string `json:"nacosAddr"`
+				NacosDataID    string `json:"nacosDataId"`
+				NacosGroup     string `json:"nacosGroup"`
+				NacosNamespace string `json:"nacosNamespace"`
+				LocalPath      string `json:"localPath"`
+				JarPath        string `json:"jarPath"`
+				JarEntry       string `json:"jarEntry"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+				auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体格式错误"})
+				return
+			}
+			// 下发采集指令, 拿到三路配置 JSON
+			params := map[string]string{
+				"nacosAddr":      req.NacosAddr,
+				"nacosDataId":    req.NacosDataID,
+				"nacosGroup":     req.NacosGroup,
+				"nacosNamespace": req.NacosNamespace,
+				"localPath":      req.LocalPath,
+				"jarPath":        req.JarPath,
+				"jarEntry":       req.JarEntry,
+			}
+			snapJSON, err := gs.CollectConfigs(agentID, params, 30*time.Second)
+			if err != nil {
+				auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			// 控制面做 diff
+			report := configdiff.BuildReport(snapJSON)
+			auth.WriteJSON(w, http.StatusOK, report)
+
+		default:
+			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知操作: " + action})
 		}
-		auth.WriteJSON(w, http.StatusOK, result)
 	}))
 
 	// 集群管理: 加入节点 / 查询状态

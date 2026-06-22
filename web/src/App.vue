@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <!-- 未登录: 显示登录页 -->
   <LoginView v-if="!isLoggedIn" @login-success="onLoginSuccess" />
   <!-- 已登录: 主布局 -->
@@ -18,7 +18,7 @@
         <el-menu-item index="cluster" disabled>
           <el-icon><Share /></el-icon><span>集群拓扑</span>
         </el-menu-item>
-        <el-menu-item index="config" disabled>
+        <el-menu-item index="config" @click="activeMenu = 'config'">
           <el-icon><Setting /></el-icon><span>配置管理</span>
         </el-menu-item>
       </el-menu>
@@ -38,6 +38,9 @@
       <el-main class="main">
         <ServerListView v-if="activeMenu === 'servers'" />
         <AgentListView v-else-if="activeMenu === 'agents'" />
+        <ConfigDiffView v-else-if="activeMenu === 'config'" />
+        <ConfigDiffView v-else-if="activeMenu === 'config'" />
+        <ConfigDiffView v-else-if="activeMenu === 'config'" />
       </el-main>
     </el-container>
   </el-container>
@@ -49,6 +52,7 @@ import { Monitor, Coin, Connection, Share, Setting, SwitchButton } from '@elemen
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import AgentListView from './views/AgentListView.vue'
+import ConfigDiffView from './views/ConfigDiffView.vue'
 import { getToken, removeToken, getCurrentUser } from './api/auth'
 
 // 登录状态: 有 token 视为已登录(刷新页面后保持)

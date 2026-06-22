@@ -151,7 +151,22 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 				result.Output = string(content)
 			}
 		}
-		log.Printf("执行 READ_CONFIG path=%s success=%v", path, result.Success)
+	case "COLLECT_CONFIGS":
+		// 采集三类配置源: Nacos / 本地配置文件 / jar 内配置
+		// 从 params 构造 ConfigSources, 调采集器, 结果 JSON 编码后回传
+		src := ConfigSources{
+			NacosAddr:      cmd.Params["nacosAddr"],
+			NacosDataID:    cmd.Params["nacosDataId"],
+			NacosGroup:     cmd.Params["nacosGroup"],
+			NacosNamespace: cmd.Params["nacosNamespace"],
+			LocalPath:      cmd.Params["localPath"],
+			JarPath:        cmd.Params["jarPath"],
+			JarEntry:       cmd.Params["jarEntry"],
+		}
+		snap := CollectConfigs(src)
+		result.Success = true
+		result.Output = snapshotToJSON(snap)
+		log.Printf("执行 COLLECT_CONFIGS success=%v", result.Success)
 	default:
 		result.Success = false
 		result.Error = "未知指令类型: " + cmd.Type

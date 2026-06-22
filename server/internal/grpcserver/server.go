@@ -260,3 +260,47 @@ func (s *Server) ReadConfig(agentID, path string, timeout time.Duration) (string
 		return "", fmt.Errorf("等待结果超时")
 	}
 }
+// CollectConfigs 向指定 Agent 下发配置采集指令, 阻塞等待结果(带超时)。
+// 供 HTTP API 调用。返回 Agent 回传的采集快照 JSON。
+func (s *Server) CollectConfigs(agentID string, params map[string]string, timeout time.Duration) (string, error) {
+	s.mu.RLock()
+	c, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %s 不在线", agentID)
+	}
+
+	cmdID := uuid.NewString()
+	ch := make(chan *pb.CommandResult, 1)
+	s.mu.Lock()
+	s.results[cmdID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.results, cmdID)
+		s.mu.Unlock()
+	}()
+
+	cmd := &pb.Command{
+		CommandId: cmdID,
+		Type:      "COLLECT_CONFIGS",
+		Params:    params,
+	}
+	select {
+	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
+	case <-c.done:
+		return "", fmt.Errorf("agent %s 已断开", agentID)
+	case <-time.After(timeout):
+		return "", fmt.Errorf("下发采集指令超时")
+	}
+
+	select {
+	case r := <-ch:
+		if !r.Success {
+			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
+		}
+		return r.Output, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("等待采集结果超时")
+	}
+}
