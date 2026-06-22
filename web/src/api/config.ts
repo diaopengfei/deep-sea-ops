@@ -31,6 +31,7 @@ export interface DiffReport {
 }
 
 // configDiff: 对指定 Agent 上的 Java 配置做三路比对
-export function configDiff(agentId: string, params: ConfigDiffReq) {
-  return request.post(`/api/agents/${agentId}/config-diff`, params)
+export async function configDiff(agentId: string, params: ConfigDiffReq): Promise<DiffReport> {
+  const res = await request.post(`/api/agents/${agentId}/config-diff`, params)
+  return res.data
 }

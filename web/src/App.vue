@@ -1,6 +1,6 @@
-﻿<template>
+<template>
   <!-- 未登录: 显示登录页 -->
-  <LoginView v-if="!isLoggedIn" @login-success="onLoginSuccess" />
+  <LoginView v-if="!isLoggedIn" @success="onLoginSuccess" />
   <!-- 已登录: 主布局 -->
   <el-container v-else class="layout">
     <el-aside width="210px" class="sidebar">
@@ -38,8 +38,6 @@
       <el-main class="main">
         <ServerListView v-if="activeMenu === 'servers'" />
         <AgentListView v-else-if="activeMenu === 'agents'" />
-        <ConfigDiffView v-else-if="activeMenu === 'config'" />
-        <ConfigDiffView v-else-if="activeMenu === 'config'" />
         <ConfigDiffView v-else-if="activeMenu === 'config'" />
       </el-main>
     </el-container>
@@ -79,9 +77,10 @@ onMounted(() => {
   }
 })
 
-function onLoginSuccess(username: string) {
+// LoginView emit 'success' 事件, 带上 username
+function onLoginSuccess(username?: string) {
   isLoggedIn.value = true
-  currentUser.value = username
+  currentUser.value = username || getCurrentUser() || 'admin'
 }
 
 function onLogout() {

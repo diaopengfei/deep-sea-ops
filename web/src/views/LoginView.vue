@@ -44,7 +44,7 @@ async function onLogin() {
     const resp = await login(form.username, form.password)
     setToken(resp.accessToken, resp.refreshToken)
     ElMessage.success('登录成功')
-    emit('success')
+   emit('success')
   } catch (e: any) {
     const msg = e.response?.data?.error || e.message || '登录失败'
     ElMessage.error(msg)
