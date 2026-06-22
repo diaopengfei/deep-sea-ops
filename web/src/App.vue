@@ -1,5 +1,8 @@
 <template>
-  <el-container class="layout">
+  <!-- 未登录: 显示登录页 -->
+  <LoginView v-if="!isLoggedIn" @login-success="onLoginSuccess" />
+  <!-- 已登录: 主布局 -->
+  <el-container v-else class="layout">
     <el-aside width="210px" class="sidebar">
       <div class="brand">
         <el-icon :size="22" color="#409eff"><Monitor /></el-icon>
@@ -12,28 +15,26 @@
         <el-menu-item index="agents" @click="activeMenu = 'agents'">
           <el-icon><Connection /></el-icon><span>Agent 节点</span>
         </el-menu-item>
+        <el-menu-item index="cluster" disabled>
+          <el-icon><Share /></el-icon><span>集群拓扑</span>
+        </el-menu-item>
         <el-menu-item index="config" disabled>
-          <el-icon><Document /></el-icon><span>配置管理</span>
-        </el-menu-item>
-        <el-menu-item index="topology" disabled>
-          <el-icon><Share /></el-icon><span>拓扑视图</span>
-        </el-menu-item>
-        <el-menu-item index="settings" disabled>
-          <el-icon><Setting /></el-icon><span>系统设置</span>
+          <el-icon><Setting /></el-icon><span>配置管理</span>
         </el-menu-item>
       </el-menu>
     </el-aside>
 
     <el-container>
-      <el-header class="topbar">
-        <div class="page-title">{{ pageTitle }}</div>
-        <div class="cluster-badge">
-          <el-tag type="success" effect="plain" size="small">
-            <el-icon><Connection /></el-icon> Raft 单节点
-          </el-tag>
+      <el-header class="header">
+        <div class="header-title">{{ pageTitle }}</div>
+        <div class="header-right">
+          <el-tag type="success" size="small" effect="dark">Raft Leader</el-tag>
+          <span class="user-info">{{ currentUser }}</span>
+          <el-button text size="small" @click="onLogout">
+            <el-icon><SwitchButton /></el-icon> 退出
+          </el-button>
         </div>
       </el-header>
-
       <el-main class="main">
         <ServerListView v-if="activeMenu === 'servers'" />
         <AgentListView v-else-if="activeMenu === 'agents'" />
@@ -43,31 +44,108 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { Monitor, Coin, Document, Share, Setting, Connection } from '@element-plus/icons-vue'
+import { ref, computed, onMounted } from 'vue'
+import { Monitor, Coin, Connection, Share, Setting, SwitchButton } from '@element-plus/icons-vue'
+import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import AgentListView from './views/AgentListView.vue'
+import { getToken, removeToken, getCurrentUser } from './api/auth'
 
+// 登录状态: 有 token 视为已登录(刷新页面后保持)
+const isLoggedIn = ref(false)
+const currentUser = ref('')
 const activeMenu = ref('servers')
 
-const titleMap: Record<string, string> = {
-  servers: '服务器管理',
-  agents: 'Agent 节点',
-  config: '配置管理',
-  topology: '拓扑视图',
-  settings: '系统设置'
+const pageTitle = computed(() => {
+  const map: Record<string, string> = {
+    servers: '服务器管理',
+    agents: 'Agent 节点',
+    cluster: '集群拓扑',
+    config: '配置管理',
+  }
+  return map[activeMenu.value] || ''
+})
+
+// 启动时检查本地是否有 token
+onMounted(() => {
+  const token = getToken()
+  if (token) {
+    isLoggedIn.value = true
+    currentUser.value = getCurrentUser() || 'admin'
+  }
+})
+
+function onLoginSuccess(username: string) {
+  isLoggedIn.value = true
+  currentUser.value = username
 }
-const pageTitle = computed(() => titleMap[activeMenu.value] || '')
+
+function onLogout() {
+  removeToken()
+  isLoggedIn.value = false
+  currentUser.value = ''
+}
 </script>
 
 <style scoped>
-.layout { height: 100vh; }
-.sidebar { background: #f5f7fa; border-right: 1px solid #e4e7ed; display: flex; flex-direction: column; }
-.brand { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid #e4e7ed; }
-.brand-name { font-size: 16px; font-weight: 600; color: #303133; }
-.nav { border-right: none; flex: 1; }
-.topbar { height: 56px; background: #fff; border-bottom: 1px solid #e4e7ed; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
-.page-title { font-size: 16px; font-weight: 600; color: #303133; }
-.cluster-badge .el-icon { vertical-align: -1px; margin-right: 2px; }
-.main { background: #f0f2f5; padding: 20px 24px; overflow-y: auto; }
+.layout {
+  height: 100vh;
+}
+.sidebar {
+  background: #304156;
+  display: flex;
+  flex-direction: column;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+.brand-name {
+  letter-spacing: 0.5px;
+}
+.nav {
+  border-right: none;
+  background: transparent;
+}
+:deep(.nav .el-menu-item) {
+  color: #bfcbd9;
+}
+:deep(.nav .el-menu-item.is-active) {
+  color: #fff;
+  background: #263445;
+}
+:deep(.nav .el-menu-item:hover) {
+  background: #263445;
+}
+.header {
+  background: #fff;
+  border-bottom: 1px solid #e6e6e6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+.header-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.user-info {
+  color: #606266;
+  font-size: 14px;
+}
+.main {
+  background: #f0f2f5;
+  padding: 20px;
+}
 </style>

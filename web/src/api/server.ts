@@ -1,19 +1,70 @@
 import axios from 'axios'
-import type { Server, AgentInfo } from './types'
+import { getToken, clearToken } from './auth'
 
-export function listServers(): Promise<Server[]> {
-  return axios.get('/api/servers').then((res) => res.data)
+// axios 实例: 所有请求自动带 JWT Authorization 头
+const http = axios.create({
+  baseURL: '/api',
+  timeout: 15000,
+})
+
+// 请求拦截器: 注入 token
+http.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// 响应拦截器: 401 时清 token 并跳登录页
+http.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    if (error.response?.status === 401) {
+      clearToken()
+      // 不用 router 跳转(避免循环依赖), 直接刷新让 App 守卫处理
+      window.location.reload()
+    }
+    return Promise.reject(error)
+  }
+)
+
+export default http
+
+// --- 服务器管理 ---
+import type { Server } from './types'
+
+export async function listServers(): Promise<Server[]> {
+  const res = await http.get<Server[]>('/servers')
+  return res.data
 }
 
-export function addServer(srv: Server): Promise<Server> {
-  return axios.post('/api/servers', srv).then((res) => res.data)
+export async function addServer(s: Server): Promise<Server> {
+  const res = await http.post<Server>('/servers', s)
+  return res.data
 }
 
-export function listAgents(): Promise<AgentInfo[]> {
-  return axios.get('/api/agents').then((res) => res.data)
+// --- Agent 管理 ---
+export interface AgentInfo {
+  id: string
+  hostname: string
+  ip: string
+  lastSeen: string
 }
 
-// 读取 Agent 上的配置文件内容
-export function readAgentConfig(agentId: string, path: string): Promise<{ agentId: string; path: string; content: string }> {
-  return axios.post(`/api/agents/${agentId}/read-config`, { path }).then((res) => res.data)
+export async function listAgents(): Promise<AgentInfo[]> {
+  const res = await http.get<AgentInfo[]>('/agents')
+  return res.data
+}
+
+export interface ReadConfigResult {
+  agentId: string
+  path: string
+  content: string
+  error?: string
+}
+
+export async function readAgentConfig(agentId: string, path: string): Promise<ReadConfigResult> {
+  const res = await http.post<ReadConfigResult>(`/agents/${agentId}/read-config`, { path })
+  return res.data
 }

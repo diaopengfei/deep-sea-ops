@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,12 +15,18 @@ import (
 	"github.com/deepsea-ops/server/internal/model"
 )
 
-// Store 封装 Raft 实例, 对外提供简单的读写方法。
+// Store 封装 Raft 实例, 对外提供业务层读写方法。
+// 上层(api/auth)只跟 Store 打交道, 不直接碰 raft.Raft 细节。
+//
+// 设计要点:
+//   - 写操作(AddServer/AddUser)必须经 raft.Apply, 保证多节点一致
+//   - 读操作(ListServers/GetUser)直接读 FSM(bbolt), 不走 Raft, 读多写少时性能好
+//   - 错误路径用 closer 列表逆序释放已打开资源, 避免泄漏
 type Store struct {
 	raft   *raft.Raft
 	fsm    *FSM
 	nodeID string
-	closer []func() error
+	closer []func() error // 出错时逆序关闭的资源
 }
 
 // NewStore 创建并启动一个 Raft 节点。
@@ -29,10 +34,10 @@ type Store struct {
 //   raftDir  : Raft 日志/快照目录
 //   nodeID   : 本节点唯一 ID(如 node1/node2/node3)
 //   raftAddr : 本节点 Raft 通信地址(如 127.0.0.1:7001)
-//   joinAddr : 已有集群 Leader 的 Raft 地址; 为空表示这是首个节点(自己 bootstrap)
+//   joinAddr : 已有集群 Leader 的 Raft 地址; 为空表示首个节点(自己 bootstrap)
 //
 // 首个节点: 直接 BootstrapCluster 注册自己为唯一 voter。
-// 加入节点: 不 bootstrap, 启动后保持 Follower 等待被 Leader AddVoter 纳入。
+// 加入节点: 不 bootstrap, 保持 Follower 等待 Leader AddVoter 纳入。
 func NewStore(raftDir, nodeID, raftAddr, joinAddr string) (*Store, error) {
 	if err := os.MkdirAll(raftDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建 raft 目录: %w", err)
@@ -40,6 +45,7 @@ func NewStore(raftDir, nodeID, raftAddr, joinAddr string) (*Store, error) {
 
 	s := &Store{nodeID: nodeID}
 
+	// FSM 用 bbolt 持久化, 存 servers 和 users 两个 bucket
 	fsm, err := NewFSM(filepath.Join(raftDir, "fsm.db"))
 	if err != nil {
 		return nil, fmt.Errorf("创建 FSM: %w", err)
@@ -47,17 +53,20 @@ func NewStore(raftDir, nodeID, raftAddr, joinAddr string) (*Store, error) {
 	s.fsm = fsm
 	s.closer = append(s.closer, fsm.Close)
 
+	// cleanup 在出错时逆序关闭已打开资源
 	cleanup := func() {
 		for i := len(s.closer) - 1; i >= 0; i-- {
 			_ = s.closer[i]()
 		}
 	}
 
+	// --- Raft 配置 ---
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(nodeID) // 多节点必须各自不同
 	config.SnapshotInterval = 30 * time.Second
 	config.SnapshotThreshold = 2
 
+	// BoltStore: Raft 用它存命令日志(stable store + log store)
 	logStore, err := raftboltdb.NewBoltStore(filepath.Join(raftDir, "raft.db"))
 	if err != nil {
 		cleanup()
@@ -65,12 +74,14 @@ func NewStore(raftDir, nodeID, raftAddr, joinAddr string) (*Store, error) {
 	}
 	s.closer = append(s.closer, logStore.Close)
 
+	// FileSnapshotStore: Raft 用它存快照文件, 保留 1 份
 	snapshotStore, err := raft.NewFileSnapshotStore(raftDir, 1, os.Stderr)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("创建 snapshot store: %w", err)
 	}
 
+	// TCPTransport: Raft 节点间通信, 3 个连接池, 10s 超时
 	transport, err := raft.NewTCPTransport(raftAddr, nil, 3, 10*time.Second, os.Stderr)
 	if err != nil {
 		cleanup()
@@ -78,16 +89,15 @@ func NewStore(raftDir, nodeID, raftAddr, joinAddr string) (*Store, error) {
 	}
 	s.closer = append(s.closer, transport.Close)
 
+	// 组装 Raft 实例
 	r, err := raft.NewRaft(config, fsm, logStore, logStore, snapshotStore, transport)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("创建 raft: %w", err)
 	}
-	s.raft = r
-	s.closer = append(s.closer, func() error { return r.Shutdown().Error() })
 
 	if joinAddr == "" {
-		// 首个节点: 引导单节点集群
+		// 首个节点: bootstrap 自己为唯一 voter
 		bootstrapCfg := raft.Configuration{
 			Servers: []raft.Server{{
 				ID:      config.LocalID,
@@ -95,87 +105,31 @@ func NewStore(raftDir, nodeID, raftAddr, joinAddr string) (*Store, error) {
 			}},
 		}
 		if err := r.BootstrapCluster(bootstrapCfg).Error(); err != nil {
+			// ErrCantBootstrap 表示集群已存在(重启场景), 正常忽略
 			if !errors.Is(err, raft.ErrCantBootstrap) {
 				cleanup()
 				return nil, fmt.Errorf("bootstrap: %w", err)
 			}
 		}
-		// 首个节点等待自己当选 Leader
+	}
+
+	s.raft = r
+	if joinAddr != "" {
+		// 加入节点: 不 bootstrap, 等 Leader 通过 AddVoter 纳入
+		// 此时本节点是 Follower, 会在被加入后自动同步日志
+		log.Printf("Raft 节点启动(Follower 待加入), id=%s addr=%s, 等待 Leader %s 纳入", nodeID, raftAddr, joinAddr)
+	} else {
+		// 首个节点: 等自己当选 Leader
 		if err := s.waitForLeader(10 * time.Second); err != nil {
 			cleanup()
 			return nil, err
 		}
-		log.Printf("Raft 首节点就绪(Leader), id=%s addr=%s", nodeID, raftAddr)
-	} else {
-		// 加入节点: 不 bootstrap, 等待被 Leader AddVoter 纳入后选举出 Leader
-		// 这里不阻塞等待 Leader, 因为 AddVoter 由外部(HTTP join 接口)触发
-		log.Printf("Raft 节点启动(Follower 待加入), id=%s addr=%s, 等待 Leader %s 纳入", nodeID, raftAddr, joinAddr)
+		log.Printf("Raft 单节点就绪, Leader=%s", raftAddr)
 	}
-
 	return s, nil
 }
 
-// AddVoter 把一个新节点加入集群(仅 Leader 可调)。
-// 供 HTTP /api/cluster/join 调用。
-func (s *Store) AddVoter(nodeID, addr string) error {
-	if s.raft.State() != raft.Leader {
-		return fmt.Errorf("当前节点不是 Leader, 无法添加 voter")
-	}
-	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 10*time.Second)
-	if err := f.Error(); err != nil {
-		return fmt.Errorf("AddVoter: %w", err)
-	}
-	log.Printf("已将节点 %s (%s) 加入集群", nodeID, addr)
-	return nil
-}
-
-// ClusterInfo 返回集群状态(供 API/前端展示)。
-type ClusterInfo struct {
-	ID      string `json:"id"`
-	State   string `json:"state"`   // Leader / Follower / Candidate
-	Leader  string `json:"leader"`  // Leader 地址
-	Term    uint64 `json:"term"`
-	Servers []struct {
-		ID      string `json:"id"`
-		Address string `json:"address"`
-		Suffrage string `json:"suffrage"` // Voter / Nonvoter
-	} `json:"servers"`
-}
-
-func (s *Store) ClusterInfo() ClusterInfo {
-	info := ClusterInfo{
-		ID:    s.nodeID,
-		State: s.raft.State().String(),
-	}
-	if leader := s.raft.Leader(); leader != "" {
-		info.Leader = string(leader)
-	}
-	info.Term = parseTerm(s.raft.Stats()["term"])
-	// 用 config 获取成员列表
-	cfg := s.raft.GetConfiguration()
-	if err := cfg.Error(); err == nil {
-		for _, srv := range cfg.Configuration().Servers {
-			info.Servers = append(info.Servers, struct {
-				ID       string `json:"id"`
-				Address  string `json:"address"`
-				Suffrage string `json:"suffrage"`
-			}{string(srv.ID), string(srv.Address), srv.Suffrage.String()})
-		}
-	}
-	return info
-}
-
-// Close 释放所有资源(按打开逆序)。
-func (s *Store) Close() error {
-	var firstErr error
-	for i := len(s.closer) - 1; i >= 0; i-- {
-		if err := s.closer[i](); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
+// waitForLeader 轮询直到本节点成为 Leader(首节点启动用)。
 func (s *Store) waitForLeader(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -187,9 +141,93 @@ func (s *Store) waitForLeader(timeout time.Duration) error {
 	return errors.New("等待 Leader 超时")
 }
 
-// AddServer 提交一条"新增服务器"命令到 Raft。
+// --- 服务器相关 ---
+
+// AddServer 提交"新增服务器"命令到 Raft。
+// 流程: 序列化命令 -> raft.Apply(一致性复制+commit) -> FSM.Apply 改 bbolt -> 返回
 func (s *Store) AddServer(srv model.Server) error {
-	cmd := command{Op: "add", Server: srv}
+	cmd := command{Op: "add_server", Server: srv}
+	return s.apply(cmd)
+}
+
+// ListServers 读取所有服务器(读不过 Raft, 直接读 bbolt)。
+func (s *Store) ListServers() []model.Server {
+	return s.fsm.List()
+}
+
+// --- 用户相关 ---
+
+// AddUser 提交"新增用户"命令到 Raft。
+// 注意: 传入的 User.PasswordHash 必须已是 bcrypt 哈希, 不能存明文。
+func (s *Store) AddUser(u model.User) error {
+	cmd := command{Op: "add_user", User: u}
+	return s.apply(cmd)
+}
+
+// GetUser 按用户名查用户(登录校验用)。
+func (s *Store) GetUser(username string) (*model.User, bool) {
+	return s.fsm.GetUser(username)
+}
+
+// ListUsers 列出所有用户(管理用)。
+func (s *Store) ListUsers() []model.User {
+	return s.fsm.ListUsers()
+}
+
+// --- 集群管理 ---
+
+// AddVoter 把一个新节点加入集群(Leader 调用)。
+// nodeID/addr 是新节点的 Raft ID 和通信地址。
+func (s *Store) AddVoter(nodeID, addr string) error {
+	if s.raft.State() != raft.Leader {
+		return errors.New("只有 Leader 能加节点")
+	}
+	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 5*time.Second)
+	return f.Error()
+}
+
+// ClusterInfo 返回集群状态信息(节点角色/Leader/成员列表)。
+func (s *Store) ClusterInfo() ClusterInfo {
+	future := s.raft.GetConfiguration()
+	_ = future.Error()
+	cfg := future.Configuration()
+
+	servers := make([]ServerInfo, 0, len(cfg.Servers))
+	for _, srv := range cfg.Servers {
+		servers = append(servers, ServerInfo{
+			ID:      string(srv.ID),
+			Address: string(srv.Address),
+			Suffrage: func() string {
+				if srv.Suffrage == raft.Voter {
+					return "Voter"
+				}
+				return "Nonvoter"
+			}(),
+		})
+	}
+
+	return ClusterInfo{
+		ID:      s.nodeID,
+		State:   s.raft.State().String(),
+		Leader:  string(s.raft.Leader()),
+		Term:    fmt.Sprintf("%s", s.raft.Stats()["term"]),
+		Servers: servers,
+	}
+}
+
+// Close 关闭 Store, 逆序释放资源(Raft/transport/bbolt)。
+func (s *Store) Close() error {
+	if s.raft != nil {
+		_ = s.raft.Shutdown().Error()
+	}
+	for i := len(s.closer) - 1; i >= 0; i-- {
+		_ = s.closer[i]()
+	}
+	return nil
+}
+
+// apply 是内部辅助: 把命令序列化后提交 Raft, 统一处理错误。
+func (s *Store) apply(cmd command) error {
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return fmt.Errorf("序列化命令: %w", err)
@@ -198,6 +236,7 @@ func (s *Store) AddServer(srv model.Server) error {
 	if err := f.Error(); err != nil {
 		return fmt.Errorf("apply 命令: %w", err)
 	}
+	// FSM.Apply 返回的 error 表示业务层执行失败(如未知 op)
 	if resp := f.Response(); resp != nil {
 		if e, ok := resp.(error); ok {
 			return e
@@ -206,20 +245,17 @@ func (s *Store) AddServer(srv model.Server) error {
 	return nil
 }
 
-// ListServers 读取当前所有服务器。读操作直接走 FSM, 不过 Raft。
-func (s *Store) ListServers() []model.Server {
-	return s.fsm.List()
+// ClusterInfo / ServerInfo 是给 API 层返回集群状态的 DTO。
+type ClusterInfo struct {
+	ID      string       `json:"id"`
+	State   string       `json:"state"`
+	Leader  string       `json:"leader"`
+	Term    string       `json:"term"`
+	Servers []ServerInfo `json:"servers"`
 }
 
-// 用 context 占位(后续 join 接口可能用)
-var _ = context.Background
-
-// parseTerm 把 Stats 里的 term 字符串转 uint64, 失败返回 0。
-func parseTerm(s string) uint64 {
-	var t uint64
-	for _, ch := range s {
-		if ch < '0' || ch > '9' { return 0 }
-		t = t*10 + uint64(ch-'0')
-	}
-	return t
+type ServerInfo struct {
+	ID       string `json:"id"`
+	Address  string `json:"address"`
+	Suffrage string `json:"suffrage"`
 }
