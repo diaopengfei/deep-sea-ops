@@ -304,3 +304,48 @@ func (s *Server) CollectConfigs(agentID string, params map[string]string, timeou
 		return "", fmt.Errorf("等待采集结果超时")
 	}
 }
+// ScanProjects 向指定 Agent 下发扫描指令, 阻塞等待结果(带超时)。
+// scanDirs 是逗号分隔的扫描目录列表(如 "/home,/data")。
+// 返回扫描结果 JSON(项目列表 + hosts 内容)。
+func (s *Server) ScanProjects(agentID, scanDirs string, timeout time.Duration) (string, error) {
+	s.mu.RLock()
+	c, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %s 不在线", agentID)
+	}
+
+	cmdID := uuid.NewString()
+	ch := make(chan *pb.CommandResult, 1)
+	s.mu.Lock()
+	s.results[cmdID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.results, cmdID)
+		s.mu.Unlock()
+	}()
+
+	cmd := &pb.Command{
+		CommandId: cmdID,
+		Type:      "SCAN_PROJECTS",
+		Params:    map[string]string{"scanDirs": scanDirs},
+	}
+	select {
+	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
+	case <-c.done:
+		return "", fmt.Errorf("agent %s 已断开", agentID)
+	case <-time.After(timeout):
+		return "", fmt.Errorf("下发扫描指令超时")
+	}
+
+	select {
+	case r := <-ch:
+		if !r.Success {
+			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
+		}
+		return r.Output, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("等待扫描结果超时")
+	}
+}

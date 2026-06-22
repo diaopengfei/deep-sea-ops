@@ -1,10 +1,12 @@
-package agentclient
+﻿package agentclient
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,7 +168,21 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		snap := CollectConfigs(src)
 		result.Success = true
 		result.Output = snapshotToJSON(snap)
-		log.Printf("执行 COLLECT_CONFIGS success=%v", result.Success)
+	case "SCAN_PROJECTS":
+		// 扫描节点上的 Java/Python 项目
+		// 扫描节点上的 Java/Python 项目
+		dirsParam := cmd.Params["scanDirs"]
+		if dirsParam == "" { dirsParam = "/home,/data" }
+		scanDirs := strings.Split(dirsParam, ",")
+		scanResult := ScanProjects(scanDirs, 5)
+		data, jerr := json.Marshal(scanResult)
+		if jerr != nil {
+			result.Success = false
+			result.Error = "序列化扫描结果失败: " + jerr.Error()
+		} else {
+			result.Success = true
+			result.Output = string(data)
+		}
 	default:
 		result.Success = false
 		result.Error = "未知指令类型: " + cmd.Type
