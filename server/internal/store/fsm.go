@@ -1,4 +1,4 @@
-package store
+﻿package store
 
 import (
 	"encoding/gob"
@@ -114,7 +114,7 @@ func (f *FSM) applyAddUser(tx *bbolt.Tx, u model.User) error {
 
 // List 是业务方法, 供 API 读取当前所有服务器。用读事务遍历 bucket。
 func (f *FSM) List() []model.Server {
-	var out []model.Server
+	out := make([]model.Server, 0)
 	f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(serversBucket)
 		return b.ForEach(func(k, v []byte) error {
@@ -152,7 +152,7 @@ func (f *FSM) GetUser(username string) (*model.User, bool) {
 
 // ListUsers 列出所有用户(供管理界面, 后续版本)。
 func (f *FSM) ListUsers() []model.User {
-	var out []model.User
+	var out = make([]model.User, 0)
 	f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(usersBucket)
 		return b.ForEach(func(k, v []byte) error {

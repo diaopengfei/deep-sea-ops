@@ -1,4 +1,4 @@
-package grpcserver
+﻿package grpcserver
 
 import (
 	"fmt"
@@ -61,7 +61,7 @@ type AgentInfo struct {
 func (s *Server) ListAgents() []AgentInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]AgentInfo, 0, len(s.agents))
+	out := make([]AgentInfo, 0, len(s.agents))  // 预分配, 空 bucket 也返回 [] 而非 null
 	for _, c := range s.agents {
 		out = append(out, AgentInfo{
 			ID: c.id, Hostname: c.hostname, IP: c.ip, LastSeen: c.lastSeen,
