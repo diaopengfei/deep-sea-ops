@@ -2,7 +2,7 @@
 
 分布式服务器运维平台 —— 用一套工具管理 20+ 台服务器上的 Java 微服务、Java/Python 程序、Redis、PostgreSQL、Kafka、Elasticsearch、ClickHouse、Nacos。
 
-> 状态: 早期开发中(v0.1)。首期聚焦 Java 微服务的配置管理与扩容迁移。
+> 状态: 早期开发中(v0.2 完成)。已完成单节点控制面、3 节点容错集群、Agent 骨架与配置读取。下一步 v0.3 登录鉴权 + Java 运维 MVP。
 
 ## 为什么造它
 
@@ -122,8 +122,10 @@ deep-sea-ops/
 
 - **v0.1** 单节点控制面 + Agent 骨架 ✅ (M1-M4 完成)
   - Raft 单节点存储、bbolt 持久化、gRPC 双向流、Agent 心跳、读配置回传
-- **v0.2** 3 节点容错集群(手动扩展)
+- **v0.2** 3 节点 Raft 容错集群 ✅ (动态加节点 + 故障切换)
   - 控制面 1 → 3 节点, 选举/复制/故障切换, 业务代码几乎不动(存储层已是 Raft)
+  - 新增 /api/cluster/join 动态加节点、/api/cluster/info 集群状态查询
+  - 验证: 杀 Leader 后 Follower 秒级当选、已提交数据不丢
 - **v0.3** Java 运维 MVP + 安全鉴权
   - M1 登录鉴权: 登录页、JWT、API 中间件、bcrypt 密码哈希、路由守卫、限流防爆破
   - 配置比对(Nacos/本地/jar)、扩容迁移、拓扑可视化(G6)、配置编辑(Monaco)
