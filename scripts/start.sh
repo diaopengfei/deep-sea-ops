@@ -27,6 +27,8 @@ mkdir -p "$PID_DIR" "$CFG_DIR"
 MODE="${1:-dev}"
 
 # ---------- 环境变量 (开发默认值, 生产请覆盖) ----------
+# v0.5.1+: 这些值也会写入 YAML 配置文件的 security 段
+# 优先级: 环境变量 > YAML 配置 > 内置默认值
 export JWT_SECRET="${JWT_SECRET:-dev-secret-change-me}"
 export ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin123}"
 export MASTER_KEY="${MASTER_KEY:-dev-master-key-please-change-32b!}"
@@ -54,6 +56,10 @@ http:
   addr: $http_addr
 grpc:
   addr: $grpc_addr
+security:
+  jwt_secret: "$JWT_SECRET"
+  admin_password: "$ADMIN_PASSWORD"
+  master_key: "$MASTER_KEY"
 EOF
     echo "$cfg_file"
 }

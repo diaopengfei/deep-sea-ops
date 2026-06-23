@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -23,23 +22,38 @@ import (
 // 配置
 // ============================================================================
 
-// jwtSecret 是 JWT 签名密钥。生产环境务必通过环境变量 JWT_SECRET 设置,
-// 部署时随机生成一个长字符串。留空则用默认值(仅限开发, 启动会打警告)。
-var jwtSecret = []byte(getEnvDefault("JWT_SECRET", "deepsea-dev-secret-change-me"))
+// jwtSecret 是 JWT 签名密钥。由 main.go 在启动时通过 InitJWTSecret 显式注入,
+// 来源优先级: 环境变量 JWT_SECRET > YAML 配置 security.jwt_secret > 内置默认值。
+//
+// 多节点 Raft 集群要求所有节点使用同一 JWT_SECRET, 否则入口代理转发请求到
+// 非签发节点时鉴权失败。
+var (
+	jwtSecret     []byte
+	jwtSecretOnce sync.Once
+)
+
+// InitJWTSecret 初始化 JWT 签名密钥。必须在 IssueTokens / ParseToken 之前调用。
+// 重复调用会被忽略(以首次为准)。
+func InitJWTSecret(secret string) {
+	jwtSecretOnce.Do(func() {
+		jwtSecret = []byte(secret)
+	})
+}
+
+// getJWTSecret 获取已初始化的 JWT 密钥(未初始化时返回 nil)。
+func getJWTSecret() []byte {
+	jwtSecretOnce.Do(func() {
+		// 未显式初始化, 用空 slice 触发后续签名失败, 避免静默使用默认值
+		jwtSecret = []byte{}
+	})
+	return jwtSecret
+}
 
 // tokenTTL 是 access token 有效期。短时效降低泄露风险, 到期用 refresh token 换新。
 const tokenTTL = 30 * time.Minute
 
 // refreshTTL 是 refresh token 有效期。较长, 配合 access token 实现无感刷新。
 const refreshTTL = 24 * time.Hour
-
-// getEnvDefault 读环境变量, 空则返回默认值。
-func getEnvDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
 
 // ============================================================================
 // 密码哈希 (bcrypt)
@@ -92,7 +106,7 @@ func IssueTokens(u model.User) (*TokenPair, error) {
 			Subject:   u.Username,
 		},
 	}
-	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims).SignedString(jwtSecret)
+	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims).SignedString(getJWTSecret())
 	if err != nil {
 		return nil, fmt.Errorf("签发 access token: %w", err)
 	}
@@ -106,7 +120,7 @@ func IssueTokens(u model.User) (*TokenPair, error) {
 			Subject:   u.Username,
 		},
 	}
-	refreshToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims).SignedString(jwtSecret)
+	refreshToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims).SignedString(getJWTSecret())
 	if err != nil {
 		return nil, fmt.Errorf("签发 refresh token: %w", err)
 	}
@@ -126,7 +140,7 @@ func ParseToken(tokenStr string) (*Claims, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("非预期签名方法: %v", t.Header["alg"])
 		}
-		return jwtSecret, nil
+		return getJWTSecret(), nil
 	})
 	return claims, err
 }
@@ -288,17 +302,6 @@ func WriteJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// InitAdminPassword 从环境变量 ADMIN_PASSWORD 读初始管理员密码,
-// 空则返回默认值并打警告(仅开发用)。
-func InitAdminPassword() string {
-	p := os.Getenv("ADMIN_PASSWORD")
-	if p == "" {
-		log.Println("警告: 未设置 ADMIN_PASSWORD, 使用默认密码 admin123 (仅限开发)")
-		return "admin123"
-	}
-	return p
 }
 
 // ============================================================================

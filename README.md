@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.5-blue" alt="v0.5" />
+  <img src="https://img.shields.io/badge/version-v0.5.1-blue" alt="v0.5.1" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -87,7 +87,7 @@
 | UI 组件 | Element Plus              | 表格 / 表单 / 树 / 抽屉       |
 | 拓扑可视化 | AntV G6 v5                | 关系图 / 拓扑               |
 | 配置编辑  | Monaco Editor             | yml 编辑 + diff          |
-| 加密    | AES-GCM                   | SSH 凭据加密, 主密钥从环境变量     |
+| 加密    | AES-GCM                   | SSH 凭据加密, 主密钥从配置文件/环境变量注入     |
 
 ## 快速开始
 
@@ -237,6 +237,13 @@ http:
 
 grpc:
   addr: :9090                # gRPC 监听 (Agent 连接)
+
+# 安全相关配置 (v0.5.1+)
+# 多节点 Raft 集群中, jwt_secret 和 master_key 必须在所有节点保持一致
+security:
+  jwt_secret: "deepsea-dev-secret-change-me"   # JWT 签名密钥 (生产必须修改)
+  admin_password: "admin123"                   # 初始管理员密码 (仅首次启动生效)
+  master_key: ""                               # SSH凭据加密主密钥(32字节base64, 留空则开发模式随机生成)
 ```
 
 ### Agent 配置 `config/agent.yaml`
@@ -248,15 +255,22 @@ server: 127.0.0.1:9090       # 控制面 gRPC 地址
 
 完整示例见 [config/server.yaml.example](config/server.yaml.example) 和 [config/agent.yaml.example](config/agent.yaml.example)。
 
-### 环境变量
+### 配置优先级与多节点一致性
 
-| 变量               | 说明                   | 默认值                            |
-| ---------------- | -------------------- | ------------------------------ |
-| `JWT_SECRET`     | JWT 签名密钥 (生产必须设置)    | `deepsea-dev-secret-change-me` |
-| `ADMIN_PASSWORD` | 初始管理员密码              | `admin123`                     |
-| `MASTER_KEY`     | SSH 凭据 AES-GCM 加密主密钥 | (内置开发值)                        |
+**优先级** (从高到低):
+1. **环境变量** — `JWT_SECRET` / `ADMIN_PASSWORD` / `MASTER_KEY` (容器化部署时用, 如 K8s Secret)
+2. **YAML 配置文件** — `security.jwt_secret` 等
+3. **内置默认值** — 开发环境用, 启动时打印警告
 
-> **生产部署务必设置以上三个环境变量**, 否则启动时会打印警告。
+**多节点 Raft 集群一致性要求**:
+
+| 配置项 | 是否必须一致 | 原因 |
+|---|---|---|
+| `jwt_secret` | **必须一致** | 入口代理转发请求到任意节点, JWT Token 必须被所有节点验证通过 |
+| `master_key` | **必须一致** | SSH 凭据加密后存 Raft 复制到所有节点, Follower 当选 Leader 后需解密凭据 |
+| `admin_password` | 非必须 | 仅首节点首次启动创建 admin 时生效, 之后密码 hash 存 Raft 复制 |
+
+> **生产部署**: 务必在 `server.yaml` 中显式设置 `jwt_secret` 和 `master_key`, 或通过环境变量注入。生成新 `master_key`: `openssl rand -base64 32`
 
 ## 部署
 
@@ -315,6 +329,14 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
   - 服务器导入支持 SSH 用户名/密码, 可测试连接状态
   - 服务器列表支持全字段排序 + 全字段模糊检索
   - 清理无用文档和脚本
+
+- **v0.5.1** 安全配置纳入配置文件 ✅
+  
+  - `server.yaml` 新增 `security` 段: `jwt_secret` / `admin_password` / `master_key`
+  - 配置优先级: 环境变量 > YAML 配置 > 内置默认值
+  - 多节点 Raft 集群一致性校验: `jwt_secret` 和 `master_key` 必须所有节点一致
+  - 启动时安全配置校验与警告 (默认值/未设置/join 模式强警告)
+  - `crypto` 和 `auth` 包改为显式初始化, 消除隐式环境变量依赖
 
 - **后续**
   

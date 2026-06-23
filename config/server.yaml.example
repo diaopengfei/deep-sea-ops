@@ -1,6 +1,9 @@
 # deepsea-server 控制面配置文件
 # 复制为 server.yaml 后修改。启动时通过 -config config/server.yaml 指定路径,
 # 不指定则默认查找 ./config/server.yaml, 文件不存在则用内置默认值。
+#
+# 配置优先级: 环境变量 > YAML 配置 > 内置默认值
+# 多节点 Raft 集群中, security 段的 jwt_secret 和 master_key 必须在所有节点保持一致。
 
 # Raft 节点 ID (集群内唯一, 如 node1 / node2 / node3)
 node_id: node1
@@ -22,7 +25,20 @@ http:
 grpc:
   addr: :9090
 
-# 环境变量 (不在配置文件中, 通过系统环境变量设置):
-#   JWT_SECRET      - JWT 签名密钥 (生产必须设置)
-#   ADMIN_PASSWORD  - 初始管理员密码 (默认 admin123)
-#   MASTER_KEY      - SSH 凭据 AES-GCM 加密主密钥 (32 字节 base64)
+# 安全相关配置 (v0.5.1+)
+# 多节点 Raft 集群中, jwt_secret 和 master_key 必须在所有节点保持一致。
+# 也可通过环境变量覆盖: JWT_SECRET / ADMIN_PASSWORD / MASTER_KEY
+security:
+  # JWT 签名密钥 (生产必须修改为长随机串)
+  # 多节点必须一致: 入口代理转发请求到任意节点, Token 必须被所有节点验证通过
+  jwt_secret: "deepsea-dev-secret-change-me"
+
+  # 初始管理员密码 (仅首节点首次启动创建 admin 时生效, 不要求多节点一致)
+  # admin 创建后密码 hash 存 Raft 复制到所有节点, 后续启动不再使用此值
+  admin_password: "admin123"
+
+  # SSH 凭据 AES-GCM 加密主密钥 (32 字节 base64 编码)
+  # 多节点必须一致: SSH 凭据加密后存 Raft 复制到所有节点, 解密必须用同一密钥
+  # 留空则开发模式随机生成 (重启后已加密凭据无法解密, 仅限开发)
+  # 生成新密钥: openssl rand -base64 32
+  master_key: ""
