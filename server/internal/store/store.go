@@ -144,9 +144,8 @@ func (s *Store) waitForLeader(timeout time.Duration) error {
 // --- 服务器相关 ---
 
 // AddServer 提交"新增服务器"命令到 Raft。
-// 流程: 序列化命令 -> raft.Apply(一致性复制+commit) -> FSM.Apply 改 bbolt -> 返回
 func (s *Store) AddServer(srv model.Server) error {
-	cmd := command{Op: "add_server", Server: srv}
+	cmd := command{Op: opAddServer, Server: srv}
 	return s.apply(cmd)
 }
 
@@ -158,9 +157,8 @@ func (s *Store) ListServers() []model.Server {
 // --- 用户相关 ---
 
 // AddUser 提交"新增用户"命令到 Raft。
-// 注意: 传入的 User.PasswordHash 必须已是 bcrypt 哈希, 不能存明文。
 func (s *Store) AddUser(u model.User) error {
-	cmd := command{Op: "add_user", User: u}
+	cmd := command{Op: opAddUser, User: u}
 	return s.apply(cmd)
 }
 
@@ -172,6 +170,78 @@ func (s *Store) GetUser(username string) (*model.User, bool) {
 // ListUsers 列出所有用户(管理用)。
 func (s *Store) ListUsers() []model.User {
 	return s.fsm.ListUsers()
+}
+
+// --- 项目相关(M4) ---
+
+// AddProject 提交"新增项目记录"命令到 Raft。
+func (s *Store) AddProject(p model.ProjectRecord) error {
+	cmd := command{Op: opAddProject, Project: p}
+	return s.apply(cmd)
+}
+
+// ClearAgentProjects 提交"清除指定 Agent 的所有项目"命令到 Raft(重新扫描前清旧数据)。
+func (s *Store) ClearAgentProjects(agentID string) error {
+	cmd := command{Op: opClearAgentProjects, Project: model.ProjectRecord{AgentID: agentID}}
+	return s.apply(cmd)
+}
+
+// ListProjects 列出所有项目记录, 可选按 agentID 过滤。
+func (s *Store) ListProjects(agentID string) []model.ProjectRecord {
+	return s.fsm.ListProjects(agentID)
+}
+
+// GetProject 按 ID 查单个项目。
+func (s *Store) GetProject(id string) (*model.ProjectRecord, bool) {
+	return s.fsm.GetProject(id)
+}
+
+// --- 部署任务相关(M5) ---
+
+// AddDeployTask 提交"新增部署任务"命令到 Raft。
+func (s *Store) AddDeployTask(t model.DeployTask) error {
+	cmd := command{Op: opAddDeployTask, Task: t}
+	return s.apply(cmd)
+}
+
+// UpdDeployTask 更新部署任务状态(走 Raft 保证多节点一致)。
+func (s *Store) UpdDeployTask(t model.DeployTask) error {
+	cmd := command{Op: opUpdDeployTask, Task: t}
+	return s.apply(cmd)
+}
+
+// ListDeployTasks 列出所有部署任务。
+func (s *Store) ListDeployTasks() []model.DeployTask {
+	return s.fsm.ListDeployTasks()
+}
+
+// GetDeployTask 按 ID 查部署任务。
+func (s *Store) GetDeployTask(id string) (*model.DeployTask, bool) {
+	return s.fsm.GetDeployTask(id)
+}
+
+// --- SSH 凭据相关(v0.4) ---
+
+// AddCredential 提交"新增 SSH 凭据"命令到 Raft。
+func (s *Store) AddCredential(c model.SSHCredential) error {
+	cmd := command{Op: opAddCredential, Credential: c}
+	return s.apply(cmd)
+}
+
+// DelCredential 提交"删除 SSH 凭据"命令到 Raft。
+func (s *Store) DelCredential(id string) error {
+	cmd := command{Op: opDelCredential, CredID: id}
+	return s.apply(cmd)
+}
+
+// GetCredential 按 ID 查 SSH 凭据。
+func (s *Store) GetCredential(id string) (*model.SSHCredential, bool) {
+	return s.fsm.GetCredential(id)
+}
+
+// ListCredentials 列出所有 SSH 凭据。
+func (s *Store) ListCredentials() []model.SSHCredential {
+	return s.fsm.ListCredentials()
 }
 
 // --- 集群管理 ---

@@ -21,7 +21,13 @@
         <el-menu-item index="config" @click="activeMenu = 'config'">
           <el-icon><Setting /></el-icon><span>配置管理</span>
         </el-menu-item>
-        <el-menu-item index="cluster" disabled>
+        <el-menu-item index="deploy" @click="activeMenu = 'deploy'">
+          <el-icon><Promotion /></el-icon><span>扩容迁移</span>
+        </el-menu-item>
+        <el-menu-item index="credentials" @click="activeMenu = 'credentials'">
+          <el-icon><Key /></el-icon><span>SSH 凭据</span>
+        </el-menu-item>
+        <el-menu-item index="cluster" @click="activeMenu = 'cluster'">
           <el-icon><Share /></el-icon><span>集群拓扑</span>
         </el-menu-item>
       </el-menu>
@@ -43,6 +49,9 @@
         <AgentListView v-else-if="activeMenu === 'agents'" />
         <ProjectScanView v-else-if="activeMenu === 'projects'" />
         <ConfigDiffView v-else-if="activeMenu === 'config'" />
+        <DeployView v-else-if="activeMenu === 'deploy'" />
+        <CredentialsView v-else-if="activeMenu === 'credentials'" />
+        <ClusterTopologyView v-else-if="activeMenu === 'cluster'" />
       </el-main>
     </el-container>
   </el-container>
@@ -50,12 +59,15 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Monitor, Coin, Connection, Share, Setting, SwitchButton, FolderOpened } from '@element-plus/icons-vue'
+import { Monitor, Coin, Connection, Share, Setting, SwitchButton, FolderOpened, Promotion, Key } from '@element-plus/icons-vue'
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import AgentListView from './views/AgentListView.vue'
 import ProjectScanView from './views/ProjectScanView.vue'
 import ConfigDiffView from './views/ConfigDiffView.vue'
+import DeployView from './views/DeployView.vue'
+import CredentialsView from './views/CredentialsView.vue'
+import ClusterTopologyView from './views/ClusterTopologyView.vue'
 import { getToken, removeToken, getCurrentUser } from './api/auth'
 
 const isLoggedIn = ref(false)
@@ -68,6 +80,8 @@ const pageTitle = computed(() => {
     agents: 'Agent 节点',
     projects: '项目扫描',
     config: '配置管理',
+    deploy: '扩容迁移',
+    credentials: 'SSH 凭据',
     cluster: '集群拓扑',
   }
   return map[activeMenu.value] || ''

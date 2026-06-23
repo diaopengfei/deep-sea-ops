@@ -1,4 +1,4 @@
-﻿package agentclient
+package agentclient
 
 import (
 	"context"
@@ -169,12 +169,15 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		result.Success = true
 		result.Output = snapshotToJSON(snap)
 	case "SCAN_PROJECTS":
-		// 扫描节点上的 Java/Python 项目
-		// 扫描节点上的 Java/Python 项目
+		// 扫描节点上的 Java/Python 项目, 并补充进程状态和生效配置
 		dirsParam := cmd.Params["scanDirs"]
-		if dirsParam == "" { dirsParam = "/home,/data" }
+		if dirsParam == "" {
+			dirsParam = "/home,/data"
+		}
 		scanDirs := strings.Split(dirsParam, ",")
 		scanResult := ScanProjects(scanDirs, 5)
+		// 补充: 进程检测 + 三路配置合并(对 Spring 项目自动采集 Nacos/本地/jar 并合并)
+		EnrichScanResult(&scanResult)
 		data, jerr := json.Marshal(scanResult)
 		if jerr != nil {
 			result.Success = false
@@ -182,6 +185,27 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		} else {
 			result.Success = true
 			result.Output = string(data)
+		}
+	case "DEPLOY":
+		// 部署/扩容: 在本节点拉起一个 Java 项目
+		// params: jarPath(源 jar 路径), configText(要写入的配置), projectName
+		output, derr := executeDeploy(cmd.Params)
+		if derr != nil {
+			result.Success = false
+			result.Error = derr.Error()
+		} else {
+			result.Success = true
+			result.Output = output
+		}
+	case "STOP_PROJECT":
+		// 停止本节点上运行的项目: 按 projectPath 匹配进程并 kill
+		output, serr := executeStopProject(cmd.Params)
+		if serr != nil {
+			result.Success = false
+			result.Error = serr.Error()
+		} else {
+			result.Success = true
+			result.Output = output
 		}
 	default:
 		result.Success = false

@@ -2,7 +2,7 @@
 
 分布式服务器运维平台 —— 用一套工具管理 20+ 台服务器上的 Java 微服务、Java/Python 程序、Redis、PostgreSQL、Kafka、Elasticsearch、ClickHouse、Nacos。
 
-> 状态: 早期开发中(v0.2 完成)。已完成单节点控制面、3 节点容错集群、Agent 骨架与配置读取。下一步 v0.3 登录鉴权 + Java 运维 MVP。
+> 状态: v0.4 完成。单节点控制面、3 节点容错集群、Agent 骨架、登录鉴权、三路配置比对、Agent 自动扫描与生效配置合并、扩容迁移编排、G6 拓扑可视化、SSH 自动注入部署、入口代理全部就绪。
 
 ## 为什么造它
 
@@ -101,11 +101,16 @@ deep-sea-ops/
 │   │   ├── server/          控制面入口
 │   │   └── agent/           Agent 入口
 │   ├── internal/            私有包(外部不可 import)
-│   │   ├── model/           领域模型
-│   │   ├── store/           Raft 存储层(FSM/Store)
-│   │   ├── api/             HTTP 路由
+│   │   ├── model/           领域模型(Server/User/Project/DeployTask/SSHCredential)
+│   │   ├── store/           Raft 存储层(FSM/Store, 5 个 bucket)
+│   │   ├── api/             HTTP 路由 + 入口代理
 │   │   ├── grpcserver/      Agent 连接管理
-│   │   ├── agentclient/     Agent 端连接逻辑
+│   │   ├── agentclient/     Agent 端连接逻辑 + 部署执行
+│   │   ├── auth/            JWT + bcrypt + 限流
+│   │   ├── crypto/          AES-GCM 加密(SSH 凭据)
+│   │   ├── sshclient/       SSH 远程操作(连接/上传/命令)
+│   │   ├── inject/          自动注入(SSH 推送 + systemd)
+│   │   ├── configdiff/      三路配置 diff
 │   │   └── proto/agent/     protoc 生成代码
 │   └── proto/agent.proto    gRPC 契约
 ├── web/                     Vue 前端
@@ -120,7 +125,7 @@ deep-sea-ops/
 
 ## 路线图
 
-- **v0.1** 单节点控制面 + Agent 骨架 ✅ (M1-M4 完成)
+- **v0.1** 单节点控制面 + Agent 骨架 ✅
   - Raft 单节点存储、bbolt 持久化、gRPC 双向流、Agent 心跳、读配置回传
 
 - **v0.2** 3 节点 Raft 容错集群 ✅ (动态加节点 + 故障切换)
@@ -128,34 +133,35 @@ deep-sea-ops/
   - 新增 /api/cluster/join 动态加节点、/api/cluster/info 集群状态查询
   - 验证: 杀 Leader 后 Follower 秒级当选、已提交数据不丢
 
-- **v0.3** Java 运维 MVP + 安全鉴权 (进行中)
+- **v0.3** Java 运维 MVP + 安全鉴权 ✅
   - **M1 登录鉴权** ✅ 登录页、JWT、API 中间件、bcrypt 密码哈希、路由守卫、限流防爆破
   - **M2 配置比对** ✅ Agent 采集 Nacos/本地/jar 三路配置, 控制面做三路 diff, 支持 Nacos 认证
-  - **M3 Agent 自动扫描** (下一步)
-    - 可配置扫描目录(默认 /home、/data 及下级目录), Agent 启动或定时扫描节点上的 Java 程序和 Python 程序
+  - **M3 Agent 自动扫描** ✅
+    - 可配置扫描目录(默认 /home、/data 及下级目录), Agent 扫描节点上的 Java 程序和 Python 程序
     - 扫描策略: 识别 jar 文件(Spring Boot fat jar)、识别含 application.yml/bootstrap.yml 的目录(Spring 项目)、识别含 requirements.txt/setup.py 的目录(Python 项目)
     - 扫描结果含: 项目路径、项目类型(java-spring/java-jar/python)、jar 路径、配置文件路径列表
     - 读 Agent 节点的 /etc/hosts 文件, 回传服务器间域名映射, 用于理解服务间调用关系
+    - 进程检测: Agent 读 /proc/*/cmdline(Linux) 或 tasklist(Windows) 判断项目是否在运行, 返回运行状态 + PID
+    - 生效配置合并: 对 Spring 项目自动采集三路配置(Nacos/本地/jar), 按 Spring 优先级(jar < 本地 < Nacos)合并出生效配置, 记录覆盖关系
+    - 前端: 项目扫描页展示项目列表(含运行状态), 详情抽屉展示生效配置 + 三路原始配置 + hosts 文件
+  - **M4 配置自动发现与比对增强** ✅
+    - 配置比对页改为"选 Agent → 选项目 → 自动填充 → 比对"流程, 复用 M3 扫描结果
+    - 配置比对展示改为 git 风格(git-style diff 展示 + 自动填充流程)
     - 扫描结果走 Raft 持久化(projects bucket), 多节点共享视图
-    - 前端: 服务器管理页或独立"项目扫描"页展示扫描到的项目列表
-  - **M4 配置自动发现与比对增强**
-    - 从 M3 扫描到的 Spring 项目配置文件中自动提取 Nacos 地址(解析 spring.cloud.nacos.config.server-addr、spring.cloud.nacos.discovery.server-addr)
-    - 从 jar 包 BOOT-INF/classes/ 自动读取内嵌配置
-    - 配置比对页面自动填充: 选项目后自动填入 Nacos 地址、本地配置路径、jar 路径、jar 内 entry, 不用手填
-    - 读 Agent 节点 hosts 文件并展示, 辅助理解服务间域名映射
-    - 前端: 配置比对页改为"选 Agent → 选项目 → 自动填充 → 比对"流程
-  - **M5 扩容迁移** (Java 程序在不同服务器间扩容和迁移)
+  - **M5 扩容迁移** ✅
     - 扩容: 选项目 + 选目标 Agent, 控制面下发部署指令(jar 分发、配置写入、进程启动)
     - 迁移: 旧节点停服 → 新节点起服, 编排走 Raft 保证一致性
-  - **M6 拓扑可视化** (G6 集成)
-    - 服务器/服务/Agent 节点拓扑图, 实时状态高亮
+    - 部署任务走 Raft 持久化(deploy_tasks bucket), 异步执行, 状态实时回传
+  - **M6 拓扑可视化** ✅ (AntV G6 集成)
+    - 服务器/服务/Agent 节点拓扑图, Leader/Follower/Agent 状态高亮
+    - 集群概览(节点数/在线 Agent/Leader/Term), 10 秒自动刷新
 
-- **v0.4** 自动部署 + 入口代理
+- **v0.4** 自动部署 + 入口代理 ✅
   - 单机起步: 添加服务器 SSH 连接信息(加密存 Raft, AES-GCM)
   - 角色选择 UI: 勾选 Raft 节点(校验奇数≥3)/ Agent 节点
   - 自动注入: SSH 推送二进制 + 配置, 远程拉起 systemd, Raft 节点自动 join, Agent 自动连 Leader
-  - 入口代理: 任意节点 IP 可访问 UI, 自动转发当前 Leader
-  - 凭据加密: AES-GCM 加密 SSH 私钥/密码, 主密钥从环境变量
+  - 入口代理: 任意节点 IP 可访问 UI, 自动转发当前 Leader(写请求转发, 读请求本地)
+  - 凭据加密: AES-GCM 加密 SSH 私钥/密码, 主密钥从环境变量 MASTER_KEY
 ## 开发
 
 ```bash

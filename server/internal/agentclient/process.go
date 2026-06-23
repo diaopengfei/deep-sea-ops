@@ -136,15 +136,13 @@ func listUnixProcesses() []RunningProcess {
 	return out
 }
 
-// IsProjectRunning 判断扫描到的项目是否在运行。
+// IsProjectRunning 判断扫描到的项目是否在运行, 返回 (是否运行, PID)。
 // 匹配策略: 进程命令行包含项目路径 或 jar 文件名。
-func IsProjectRunning(projectPath string, processes []RunningProcess) bool {
+func IsProjectRunning(projectPath string, processes []RunningProcess) (bool, int) {
 	for _, p := range processes {
 		if strings.Contains(p.CmdLine, projectPath) {
-			return true
+			return true, p.PID
 		}
-		// jar 项目: 检查 jar 文件名是否出现在命令行里
-		// (java -jar /path/to/app.jar 的命令行包含 app.jar)
 	}
-	return false
+	return false, 0
 }

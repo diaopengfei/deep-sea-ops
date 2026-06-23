@@ -1,4 +1,4 @@
-﻿package store
+package store
 
 import (
 	"encoding/gob"
@@ -17,34 +17,27 @@ import (
 // bucket 名字。bbolt 用"桶"组织 KV, 类似命名空间。
 // 一个 bbolt 文件里可以有多个 bucket, 互不干扰。
 var (
-	serversBucket = []byte("servers") // 服务器清单
-	usersBucket   = []byte("users")   // 用户账户(登录鉴权)
+	serversBucket     = []byte("servers")     // 服务器清单
+	usersBucket       = []byte("users")       // 用户账户(登录鉴权)
+	projectsBucket    = []byte("projects")    // 扫描到的项目(M4 持久化)
+	deployTasksBucket = []byte("deploy_tasks") // 部署任务(M5 扩容迁移)
+	credentialsBucket = []byte("credentials") // SSH 凭据(v0.4)
 )
 
 // FSM 是状态机。Raft 负责把命令按顺序可靠地送达, FSM 负责收到命令后真正改状态。
 // 必须实现 raft.FSM 接口的三个方法: Apply / Snapshot / Restore。
-//
-// M2 起: 内部存储用 bbolt(嵌入式 KV 数据库, 单文件)。
-// 好处: 1) bbolt 自带事务锁, 不再需要 sync.RWMutex
-//       2) 数据持久化在文件里, 大数据量下读写按需进行
-// v0.3 起: 增加 users bucket, 用户数据同样走 Raft 保证多节点一致。
-// 对外接口(Apply/Snapshot/Restore 签名)完全不变, 上层无感知。
 type FSM struct {
 	db *bbolt.DB
 }
 
-// NewFSM 打开(或创建)bbolt 文件, 并确保 servers/users 桶存在。
-// dbPath 是 bbolt 数据库文件的完整路径。
+// NewFSM 打开(或创建)bbolt 文件, 并确保所有 bucket 存在。
 func NewFSM(dbPath string) (*FSM, error) {
-	// bbolt.Open 要求父目录存在, 这里其实已由上层 NewStore 的 MkdirAll 保证,
-	// 但防御性检查一下, 避免"路径是文件而非目录"这类边界情况。
 	db, err := bbolt.Open(filepath.Join(filepath.Dir(dbPath), filepath.Base(dbPath)), 0o600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("打开 bbolt: %w", err)
 	}
-	// 初始化时创建 bucket(已存在则跳过)。Update 是写事务, 自动提交。
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{serversBucket, usersBucket} {
+		for _, b := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -61,23 +54,33 @@ func (f *FSM) Close() error {
 	return f.db.Close()
 }
 
-// Apply 在 Raft 确认一条命令后被回调。l.Data 就是我们传给 raft.Apply 的字节。
-// 用 bbolt 写事务把数据落盘。
-// 注意参数名用 l 而不是 log, 否则会遮蔽 log 包导致 log.Printf 编译失败。
+// Apply 在 Raft 确认一条命令后被回调。
 func (f *FSM) Apply(l *raft.Log) interface{} {
 	var cmd command
 	if err := json.Unmarshal(l.Data, &cmd); err != nil {
 		return fmt.Errorf("反序列化命令失败: %w", err)
 	}
 
-	// bbolt 的写事务: 事务返回 nil 则提交, 返回 error 则回滚。
-	// 写事务天然串行(bbolt 内部锁), 所以不用自己加锁。
 	err := f.db.Update(func(tx *bbolt.Tx) error {
 		switch cmd.Op {
-		case "add_server":
+		case opAddServer:
 			return f.applyAddServer(tx, cmd.Server)
-		case "add_user":
+		case opAddUser:
 			return f.applyAddUser(tx, cmd.User)
+		case opAddProject:
+			return f.applyAddProject(tx, cmd.Project)
+		case opDelProject:
+			return f.applyDelProject(tx, cmd.Project.ID)
+		case opClearAgentProjects:
+			return f.applyClearAgentProjects(tx, cmd.Project.AgentID)
+		case opAddDeployTask:
+			return f.applyAddDeployTask(tx, cmd.Task)
+		case opUpdDeployTask:
+			return f.applyUpdDeployTask(tx, cmd.Task)
+		case opAddCredential:
+			return f.applyAddCredential(tx, cmd.Credential)
+		case opDelCredential:
+			return f.applyDelCredential(tx, cmd.CredID)
 		default:
 			return fmt.Errorf("未知操作: %s", cmd.Op)
 		}
@@ -86,11 +89,11 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 		log.Printf("FSM Apply 失败: %v", err)
 		return err
 	}
-	log.Printf("FSM 应用 %s 命令", cmd.Op)
 	return nil
 }
 
-// applyAddServer 把一台服务器写入 servers bucket。
+// --- 服务器 ---
+
 func (f *FSM) applyAddServer(tx *bbolt.Tx, srv model.Server) error {
 	b := tx.Bucket(serversBucket)
 	val, err := json.Marshal(srv)
@@ -100,19 +103,6 @@ func (f *FSM) applyAddServer(tx *bbolt.Tx, srv model.Server) error {
 	return b.Put([]byte(srv.ID), val)
 }
 
-// applyAddUser 把一个用户写入 users bucket。
-func (f *FSM) applyAddUser(tx *bbolt.Tx, u model.User) error {
-	b := tx.Bucket(usersBucket)
-	val, err := json.Marshal(u)
-	if err != nil {
-		return err
-	}
-	return b.Put([]byte(u.Username), val)
-}
-
-// --- 服务器读取 ---
-
-// List 是业务方法, 供 API 读取当前所有服务器。用读事务遍历 bucket。
 func (f *FSM) List() []model.Server {
 	out := make([]model.Server, 0)
 	f.db.View(func(tx *bbolt.Tx) error {
@@ -129,10 +119,17 @@ func (f *FSM) List() []model.Server {
 	return out
 }
 
-// --- 用户读取 ---
+// --- 用户 ---
 
-// GetUser 按用户名查用户, 供登录鉴权使用。
-// 返回 (用户指针, 是否找到)。未找到时返回 (nil, false)。
+func (f *FSM) applyAddUser(tx *bbolt.Tx, u model.User) error {
+	b := tx.Bucket(usersBucket)
+	val, err := json.Marshal(u)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(u.Username), val)
+}
+
 func (f *FSM) GetUser(username string) (*model.User, bool) {
 	var u *model.User
 	f.db.View(func(tx *bbolt.Tx) error {
@@ -150,7 +147,6 @@ func (f *FSM) GetUser(username string) (*model.User, bool) {
 	return u, true
 }
 
-// ListUsers 列出所有用户(供管理界面, 后续版本)。
 func (f *FSM) ListUsers() []model.User {
 	var out = make([]model.User, 0)
 	f.db.View(func(tx *bbolt.Tx) error {
@@ -167,46 +163,242 @@ func (f *FSM) ListUsers() []model.User {
 	return out
 }
 
-// --- Snapshot / Restore ---
+// --- 项目(M4) ---
 
-type snapshotData struct {
-	Servers map[string]model.Server
-	Users   map[string]model.User
+func (f *FSM) applyAddProject(tx *bbolt.Tx, p model.ProjectRecord) error {
+	b := tx.Bucket(projectsBucket)
+	val, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(p.ID), val)
 }
 
-// Snapshot 打包当前状态, 供 Raft 压缩日志和给新节点同步用。
-// 从 bbolt 读出所有 KV, 转成 map 打包。
-func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
-	servers := make(map[string]model.Server)
-	users := make(map[string]model.User)
-	f.db.View(func(tx *bbolt.Tx) error {
-		if b := tx.Bucket(serversBucket); b != nil {
-			b.ForEach(func(k, v []byte) error {
-				var s model.Server
-				if err := json.Unmarshal(v, &s); err != nil {
-					return err
-				}
-				servers[string(k)] = s
-				return nil
-			})
-		}
-		if b := tx.Bucket(usersBucket); b != nil {
-			b.ForEach(func(k, v []byte) error {
-				var u model.User
-				if err := json.Unmarshal(v, &u); err != nil {
-					return err
-				}
-				users[string(k)] = u
-				return nil
-			})
+func (f *FSM) applyDelProject(tx *bbolt.Tx, id string) error {
+	b := tx.Bucket(projectsBucket)
+	return b.Delete([]byte(id))
+}
+
+// applyClearAgentProjects 清除指定 Agent 的所有项目记录(重新扫描前先清旧数据)。
+func (f *FSM) applyClearAgentProjects(tx *bbolt.Tx, agentID string) error {
+	b := tx.Bucket(projectsBucket)
+	var keysToDelete [][]string
+	b.ForEach(func(k, v []byte) error {
+		var p model.ProjectRecord
+		if err := json.Unmarshal(v, &p); err == nil {
+			if p.AgentID == agentID {
+				keysToDelete = append(keysToDelete, []string{string(k)})
+			}
 		}
 		return nil
 	})
-	return &fsmSnapshot{data: snapshotData{Servers: servers, Users: users}}, nil
+	for _, k := range keysToDelete {
+		_ = b.Delete([]byte(k[0]))
+	}
+	return nil
 }
 
-// Restore 在节点启动时从快照恢复(在重放日志之前)。
-// 清空所有 bucket, 再把快照内容写回去, 保证状态与快照一致。
+// ListProjects 列出所有项目记录。可选按 agentID 过滤。
+func (f *FSM) ListProjects(agentID string) []model.ProjectRecord {
+	out := make([]model.ProjectRecord, 0)
+	f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(projectsBucket)
+		return b.ForEach(func(k, v []byte) error {
+			var p model.ProjectRecord
+			if err := json.Unmarshal(v, &p); err != nil {
+				return err
+			}
+			if agentID != "" && p.AgentID != agentID {
+				return nil
+			}
+			out = append(out, p)
+			return nil
+		})
+	})
+	return out
+}
+
+// GetProject 按 ID 查单个项目。
+func (f *FSM) GetProject(id string) (*model.ProjectRecord, bool) {
+	var p *model.ProjectRecord
+	f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(projectsBucket)
+		val := b.Get([]byte(id))
+		if val == nil {
+			return nil
+		}
+		p = &model.ProjectRecord{}
+		return json.Unmarshal(val, p)
+	})
+	if p == nil {
+		return nil, false
+	}
+	return p, true
+}
+
+// --- 部署任务(M5) ---
+
+func (f *FSM) applyAddDeployTask(tx *bbolt.Tx, t model.DeployTask) error {
+	b := tx.Bucket(deployTasksBucket)
+	val, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(t.ID), val)
+}
+
+func (f *FSM) applyUpdDeployTask(tx *bbolt.Tx, t model.DeployTask) error {
+	return f.applyAddDeployTask(tx, t) // 同样是 Put, 覆盖
+}
+
+func (f *FSM) ListDeployTasks() []model.DeployTask {
+	out := make([]model.DeployTask, 0)
+	f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(deployTasksBucket)
+		return b.ForEach(func(k, v []byte) error {
+			var t model.DeployTask
+			if err := json.Unmarshal(v, &t); err != nil {
+				return err
+			}
+			out = append(out, t)
+			return nil
+		})
+	})
+	return out
+}
+
+func (f *FSM) GetDeployTask(id string) (*model.DeployTask, bool) {
+	var t *model.DeployTask
+	f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(deployTasksBucket)
+		val := b.Get([]byte(id))
+		if val == nil {
+			return nil
+		}
+		t = &model.DeployTask{}
+		return json.Unmarshal(val, t)
+	})
+	if t == nil {
+		return nil, false
+	}
+	return t, true
+}
+
+// --- SSH 凭据(v0.4) ---
+
+func (f *FSM) applyAddCredential(tx *bbolt.Tx, c model.SSHCredential) error {
+	b := tx.Bucket(credentialsBucket)
+	val, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(c.ID), val)
+}
+
+func (f *FSM) applyDelCredential(tx *bbolt.Tx, id string) error {
+	b := tx.Bucket(credentialsBucket)
+	return b.Delete([]byte(id))
+}
+
+func (f *FSM) GetCredential(id string) (*model.SSHCredential, bool) {
+	var c *model.SSHCredential
+	f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(credentialsBucket)
+		val := b.Get([]byte(id))
+		if val == nil {
+			return nil
+		}
+		c = &model.SSHCredential{}
+		return json.Unmarshal(val, c)
+	})
+	if c == nil {
+		return nil, false
+	}
+	return c, true
+}
+
+func (f *FSM) ListCredentials() []model.SSHCredential {
+	out := make([]model.SSHCredential, 0)
+	f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(credentialsBucket)
+		return b.ForEach(func(k, v []byte) error {
+			var c model.SSHCredential
+			if err := json.Unmarshal(v, &c); err != nil {
+				return err
+			}
+			out = append(out, c)
+			return nil
+		})
+	})
+	return out
+}
+
+// --- Snapshot / Restore ---
+
+type snapshotData struct {
+	Servers     map[string]model.Server
+	Users       map[string]model.User
+	Projects    map[string]model.ProjectRecord
+	DeployTasks map[string]model.DeployTask
+	Credentials map[string]model.SSHCredential
+}
+
+// Snapshot 打包当前状态, 供 Raft 压缩日志和给新节点同步用。
+func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
+	data := snapshotData{
+		Servers:     make(map[string]model.Server),
+		Users:       make(map[string]model.User),
+		Projects:    make(map[string]model.ProjectRecord),
+		DeployTasks: make(map[string]model.DeployTask),
+		Credentials: make(map[string]model.SSHCredential),
+	}
+	f.db.View(func(tx *bbolt.Tx) error {
+		readBucket := func(name []byte, fn func(k, v []byte) error) {
+			if b := tx.Bucket(name); b != nil {
+				_ = b.ForEach(fn)
+			}
+		}
+		readBucket(serversBucket, func(k, v []byte) error {
+			var s model.Server
+			if err := json.Unmarshal(v, &s); err == nil {
+				data.Servers[string(k)] = s
+			}
+			return nil
+		})
+		readBucket(usersBucket, func(k, v []byte) error {
+			var u model.User
+			if err := json.Unmarshal(v, &u); err == nil {
+				data.Users[string(k)] = u
+			}
+			return nil
+		})
+		readBucket(projectsBucket, func(k, v []byte) error {
+			var p model.ProjectRecord
+			if err := json.Unmarshal(v, &p); err == nil {
+				data.Projects[string(k)] = p
+			}
+			return nil
+		})
+		readBucket(deployTasksBucket, func(k, v []byte) error {
+			var t model.DeployTask
+			if err := json.Unmarshal(v, &t); err == nil {
+				data.DeployTasks[string(k)] = t
+			}
+			return nil
+		})
+		readBucket(credentialsBucket, func(k, v []byte) error {
+			var c model.SSHCredential
+			if err := json.Unmarshal(v, &c); err == nil {
+				data.Credentials[string(k)] = c
+			}
+			return nil
+		})
+		return nil
+	})
+	return &fsmSnapshot{data: data}, nil
+}
+
+// Restore 在节点启动时从快照恢复。
 func (f *FSM) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
 	var data snapshotData
@@ -214,8 +406,8 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		return fmt.Errorf("恢复快照失败: %w", err)
 	}
 	if err := f.db.Update(func(tx *bbolt.Tx) error {
-		// 逐个 bucket: 删旧重建, 比 ForEach+Delete 干净。
-		for _, name := range [][]byte{serversBucket, usersBucket} {
+		// 逐个 bucket: 删旧重建
+		for _, name := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket} {
 			if err := tx.DeleteBucket(name); err != nil && err != bbolt.ErrBucketNotFound {
 				return err
 			}
@@ -223,33 +415,68 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 				return err
 			}
 		}
-		// 写回服务器
-		sb := tx.Bucket(serversBucket)
-		for id, s := range data.Servers {
-			val, err := json.Marshal(s)
-			if err != nil {
-				return err
+		restoreBucket := func(name []byte, items interface{}) error {
+			b := tx.Bucket(name)
+			switch m := items.(type) {
+			case map[string]model.Server:
+				for id, s := range m {
+					val, _ := json.Marshal(s)
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
+			case map[string]model.User:
+				for name, u := range m {
+					val, _ := json.Marshal(u)
+					if err := b.Put([]byte(name), val); err != nil {
+						return err
+					}
+				}
+			case map[string]model.ProjectRecord:
+				for id, p := range m {
+					val, _ := json.Marshal(p)
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
+			case map[string]model.DeployTask:
+				for id, t := range m {
+					val, _ := json.Marshal(t)
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
+			case map[string]model.SSHCredential:
+				for id, c := range m {
+					val, _ := json.Marshal(c)
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
 			}
-			if err := sb.Put([]byte(id), val); err != nil {
-				return err
-			}
+			return nil
 		}
-		// 写回用户
-		ub := tx.Bucket(usersBucket)
-		for name, u := range data.Users {
-			val, err := json.Marshal(u)
-			if err != nil {
-				return err
-			}
-			if err := ub.Put([]byte(name), val); err != nil {
-				return err
-			}
+		if err := restoreBucket(serversBucket, data.Servers); err != nil {
+			return err
+		}
+		if err := restoreBucket(usersBucket, data.Users); err != nil {
+			return err
+		}
+		if err := restoreBucket(projectsBucket, data.Projects); err != nil {
+			return err
+		}
+		if err := restoreBucket(deployTasksBucket, data.DeployTasks); err != nil {
+			return err
+		}
+		if err := restoreBucket(credentialsBucket, data.Credentials); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("写入恢复数据: %w", err)
 	}
-	log.Printf("FSM 从快照恢复: %d 台服务器, %d 个用户", len(data.Servers), len(data.Users))
+	log.Printf("FSM 从快照恢复: %d 服务器, %d 用户, %d 项目, %d 部署任务, %d 凭据",
+		len(data.Servers), len(data.Users), len(data.Projects), len(data.DeployTasks), len(data.Credentials))
 	return nil
 }
 
@@ -266,5 +493,5 @@ func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 	return sink.Close()
 }
 
-// Release 释放快照资源(Raft 接口要求, 这里无额外资源)。
+// Release 释放快照资源。
 func (s *fsmSnapshot) Release() {}

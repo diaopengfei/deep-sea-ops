@@ -29,7 +29,7 @@ import { ElMessage } from 'element-plus'
 import { login, setToken } from '../api/auth'
 
 // 通知父组件登录成功, 由父组件切换到主界面
-const emit = defineEmits<{ (e: 'success'): void }>()
+const emit = defineEmits<{ (e: 'login-success', username: string): void }>()
 
 const loading = ref(false)
 const form = reactive({ username: '', password: '' })
@@ -44,7 +44,7 @@ async function onLogin() {
     const resp = await login(form.username, form.password)
     setToken(resp.accessToken, resp.refreshToken)
     ElMessage.success('登录成功')
-   emit('success')
+   emit('login-success', resp.username)
   } catch (e: any) {
     const msg = e.response?.data?.error || e.message || '登录失败'
     ElMessage.error(msg)

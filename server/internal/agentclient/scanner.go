@@ -1,4 +1,4 @@
-﻿package agentclient
+package agentclient
 
 import (
 	"io/fs"
@@ -18,12 +18,17 @@ const (
 
 // ProjectInfo 描述扫描到的一个项目
 type ProjectInfo struct {
-	Path         string      `json:"path"`         // 项目根目录或 jar 路径
-	Type         ProjectType `json:"type"`          // 项目类型
-	Name         string      `json:"name"`          // 项目名(目录名或 jar 文件名)
-	ConfigFiles  []string    `json:"configFiles"`   // 配置文件路径列表(application.yml 等)
-	JarPath      string      `json:"jarPath"`       // jar 路径(java-jar 类型)
-	JarEntry     string      `json:"jarEntry"`      // jar 内默认配置 entry
+	Path         string         `json:"path"`         // 项目根目录或 jar 路径
+	Type         ProjectType    `json:"type"`          // 项目类型
+	Name         string         `json:"name"`          // 项目名(目录名或 jar 文件名)
+	ConfigFiles  []string       `json:"configFiles"`   // 配置文件路径列表(application.yml 等)
+	JarPath      string         `json:"jarPath"`       // jar 路径(java-jar 类型)
+	JarEntry     string         `json:"jarEntry"`      // jar 内默认配置 entry
+
+	// 以下字段在扫描后由 EnrichScanResult 填充:
+	Running         bool            `json:"running"`         // 是否在运行(通过进程列表匹配)
+	PID             int             `json:"pid"`             // 运行中的进程 PID, 未运行为 0
+	EffectiveConfig *EffectiveConfig `json:"effectiveConfig"` // 三路合并后的生效配置(Spring 项目)
 }
 
 // ScanResult 是一次扫描的结果
@@ -241,3 +246,137 @@ func parseScanDirs() []string {
 
 // 确保使用 io/fs(避免 unused import 如果将来扩展)
 var _ fs.DirEntry
+
+// EnrichScanResult 在扫描完成后, 为每个项目补充运行状态和生效配置。
+//
+// 做两件事:
+//  1. 调 ListProcesses 获取当前进程列表, 匹配每个项目判断是否在运行
+//  2. 对 Spring 项目: 读本地配置文件 → 提取 Nacos 地址 → 采集三路配置 → 合并出生效配置
+//
+// 对 Python 项目和独立 jar, 只做进程检测, 不做配置合并(Python 无统一配置格式, jar 的配置
+// 已在 Spring 项目流程里覆盖)。
+func EnrichScanResult(result *ScanResult) {
+	if result == nil || len(result.Projects) == 0 {
+		return
+	}
+
+	// 1. 获取进程列表(一次获取, 所有项目共用)
+	processes := ListProcesses()
+
+	for i := range result.Projects {
+		p := &result.Projects[i]
+
+		// 1a. 进程检测: 用项目路径匹配
+		running, pid := IsProjectRunning(p.Path, processes)
+		p.Running = running
+		p.PID = pid
+
+		// 1b. 对 Spring 项目做三路配置采集与合并
+		if p.Type == ProjectJavaSpring && len(p.ConfigFiles) > 0 {
+			p.EffectiveConfig = buildEffectiveConfig(p)
+		}
+	}
+}
+
+// buildEffectiveConfig 对单个 Spring 项目采集三路配置并合并。
+//
+// 流程:
+//  1. 读本地配置文件(application.yml 等), 拼成一份本地配置文本
+//  2. 从本地配置中提取 Nacos 地址(spring.cloud.nacos.config.server-addr 等)
+//  3. 如果有 jar 包(同目录或子目录), 读 jar 内 BOOT-INF/classes/application.yml
+//  4. 如果有 Nacos 地址, 调 Nacos OpenAPI 拉远程配置
+//  5. 三路合并: jar(低) < 本地 < Nacos(高), 产出生效配置
+func buildEffectiveConfig(p *ProjectInfo) *EffectiveConfig {
+	// 1. 读本地配置文件, 拼接成一份文本
+	var localText string
+	var localErrs []string
+	for _, cfgPath := range p.ConfigFiles {
+		b, err := os.ReadFile(cfgPath)
+		if err != nil {
+			localErrs = append(localErrs, cfgPath+": "+err.Error())
+			continue
+		}
+		if localText != "" {
+			localText += "\n"
+		}
+		localText += string(b)
+	}
+
+	// 2. 从本地配置提取 Nacos 地址
+	// 先展平成 KV, 再用 extractNacosAddr 查找
+	localKV := flattenConfig(localText, "yml")
+	nacosAddr := extractNacosAddr(localKV)
+
+	// 同时提取 dataId / group(如果有自定义配置)
+	nacosDataID := localKV["spring.cloud.nacos.config.data-id"]
+	nacosGroup := localKV["spring.cloud.nacos.config.group"]
+	if nacosGroup == "" {
+		nacosGroup = "DEFAULT_GROUP"
+	}
+	// 从 spring.application.name 推断默认 dataId
+	if nacosDataID == "" {
+		if appName := localKV["spring.application.name"]; appName != "" {
+			nacosDataID = appName + ".yml"
+		}
+	}
+
+	// 3. 读 jar 内配置(如果有 jar)
+	var jarText string
+	var jarErr string
+	jarPath := p.JarPath
+	if jarPath == "" {
+		// 尝试在项目目录下找 jar
+		jarPath = findJarInDir(p.Path)
+	}
+	jarEntry := p.JarEntry
+	if jarEntry == "" {
+		jarEntry = "BOOT-INF/classes/application.yml"
+	}
+	if jarPath != "" {
+		jarText, jarErr = readJarEntry(jarPath, jarEntry)
+	} else {
+		jarErr = "未找到 jar 包"
+	}
+
+	// 4. 采集 Nacos 远程配置
+	var nacosText string
+	var nacosErr string
+	if nacosAddr != "" && nacosDataID != "" {
+		src := ConfigSources{
+			NacosAddr:      nacosAddr,
+			NacosDataID:    nacosDataID,
+			NacosGroup:     nacosGroup,
+			NacosNamespace: localKV["spring.cloud.nacos.config.namespace"],
+		}
+		snap := CollectConfigs(src)
+		nacosText = snap.Nacos
+		nacosErr = snap.NacosErr
+	} else {
+		nacosErr = "未提取到 Nacos 地址或 dataId"
+	}
+
+	// 5. 三路合并
+	ec := MergeConfigs(nacosText, localText, jarText)
+	// 填充各源采集错误(供前端展示采集失败原因)
+	ec.NacosErr = nacosErr
+	ec.LocalErr = strings.Join(localErrs, "; ")
+	ec.JarErr = jarErr
+	return &ec
+}
+
+// findJarInDir 在项目目录下查找 jar 文件(取第一个)。
+func findJarInDir(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".jar") {
+			return filepath.Join(dir, entry.Name())
+		}
+	}
+	return ""
+}

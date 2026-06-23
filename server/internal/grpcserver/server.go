@@ -1,4 +1,4 @@
-﻿package grpcserver
+package grpcserver
 
 import (
 	"fmt"
@@ -347,5 +347,50 @@ func (s *Server) ScanProjects(agentID, scanDirs string, timeout time.Duration) (
 		return r.Output, nil
 	case <-time.After(timeout):
 		return "", fmt.Errorf("等待扫描结果超时")
+	}
+}
+
+// SendCommand 通用指令下发: 向指定 Agent 发送任意类型的指令, 阻塞等待结果。
+// 用于 DEPLOY / STOP_PROJECT 等新指令类型, 避免每加一种指令就写一个方法。
+func (s *Server) SendCommand(agentID, cmdType string, params map[string]string, timeout time.Duration) (string, error) {
+	s.mu.RLock()
+	c, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %s 不在线", agentID)
+	}
+
+	cmdID := uuid.NewString()
+	ch := make(chan *pb.CommandResult, 1)
+	s.mu.Lock()
+	s.results[cmdID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.results, cmdID)
+		s.mu.Unlock()
+	}()
+
+	cmd := &pb.Command{
+		CommandId: cmdID,
+		Type:      cmdType,
+		Params:    params,
+	}
+	select {
+	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
+	case <-c.done:
+		return "", fmt.Errorf("agent %s 已断开", agentID)
+	case <-time.After(timeout):
+		return "", fmt.Errorf("下发 %s 指令超时", cmdType)
+	}
+
+	select {
+	case r := <-ch:
+		if !r.Success {
+			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
+		}
+		return r.Output, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("等待 %s 结果超时", cmdType)
 	}
 }

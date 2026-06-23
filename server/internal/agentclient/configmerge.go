@@ -1,4 +1,4 @@
-﻿package agentclient
+package agentclient
 
 import (
 	"bufio"
@@ -27,10 +27,18 @@ type ConfigItem struct {
 
 // EffectiveConfig 是三路配置合并后的最终结果
 type EffectiveConfig struct {
-	Items     []ConfigItem             `json:"items"`      // 所有生效配置项(按 key 排序)
-	Overrides []OverrideRecord         `json:"overrides"`  // 被覆盖的记录(哪个 key 被哪个源覆盖)
-	SourceRaw  map[ConfigSource]string `json:"sourceRaw"`  // 三路原始配置文本(供用户回看)
-	SourceErr  map[ConfigSource]string `json:"sourceErr"`  // 各源采集错误
+	Items     []ConfigItem     `json:"items"`      // 所有生效配置项(按 key 排序)
+	Overrides []OverrideRecord `json:"overrides"`  // 被覆盖的记录(哪个 key 被哪个源覆盖)
+
+	// 三路原始配置文本(供用户回看, 前端直接展示)
+	NacosRaw string `json:"nacosRaw"`
+	LocalRaw string `json:"localRaw"`
+	JarRaw   string `json:"jarRaw"`
+
+	// 各源采集错误(空表示无错误)
+	NacosErr string `json:"nacosErr"`
+	LocalErr string `json:"localErr"`
+	JarErr   string `json:"jarErr"`
 }
 
 // OverrideRecord 记录一个被覆盖的配置项
@@ -46,12 +54,9 @@ type OverrideRecord struct {
 // 返回最终生效配置 + 覆盖记录 + 原始文本。
 func MergeConfigs(nacos, local, jar string) EffectiveConfig {
 	ec := EffectiveConfig{
-		SourceRaw: map[ConfigSource]string{
-			SourceNacos: nacos,
-			SourceLocal: local,
-			SourceJar:   jar,
-		},
-		SourceErr: map[ConfigSource]string{},
+		NacosRaw: nacos,
+		LocalRaw: local,
+		JarRaw:   jar,
 	}
 
 	// 按优先级从低到高依次展平合并

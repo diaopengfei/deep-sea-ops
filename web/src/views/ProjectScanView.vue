@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="project-view">
     <div class="panel">
       <div class="panel-toolbar">
@@ -97,7 +97,8 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { listAgents, scanProjects } from '../api/projects'
+import { listAgents } from '../api/server'
+import { scanProjects } from '../api/projects'
 import type { AgentInfo } from '../api/types'
 
 interface ConfigItem {

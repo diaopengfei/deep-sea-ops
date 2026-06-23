@@ -31,7 +31,8 @@ export interface DiffReport {
 }
 
 // configDiff: 对指定 Agent 上的 Java 配置做三路比对
+// 注意: server.ts 的 axios 实例 baseURL 已设为 /api, 这里用相对路径
 export async function configDiff(agentId: string, params: ConfigDiffReq): Promise<DiffReport> {
-  const res = await request.post(`/api/agents/${agentId}/config-diff`, params)
+  const res = await request.post(`agents/${agentId}/config-diff`, params)
   return res.data
 }

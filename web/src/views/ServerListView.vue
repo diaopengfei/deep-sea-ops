@@ -124,7 +124,12 @@ const filteredServers = computed(() => {
 async function loadServers() {
   loading.value = true
   try {
-    servers.value = await listServers()
+    const data = await listServers()
+    // 防御: 后端可能返回 null(空列表), 确保 servers.value 始终是数组
+    servers.value = Array.isArray(data) ? data : []
+  } catch (e: any) {
+    servers.value = []
+    ElMessage.error('加载服务器列表失败: ' + (e.response?.data?.error || e.message))
   } finally {
     loading.value = false
   }
