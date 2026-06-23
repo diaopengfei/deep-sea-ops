@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.4-blue" alt="v0.4" />
+  <img src="https://img.shields.io/badge/version-v0.5-blue" alt="v0.5" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -41,9 +41,11 @@
 
 - **分布式控制面** — 3 节点 Raft 强一致集群 (hashicorp/raft), 容忍 1 节点故障, 秒级 Leader 切换
 - **Agent 架构** — 每台被管机器跑轻量 Agent, gRPC 双向流长连接, 心跳 + 指令下发
+- **配置文件启动** — 参考 Kafka / ES, 通过 YAML 配置文件启动, 不再依赖命令行参数
 - **配置治理** — 连接 Nacos / 本地配置 / jar 内配置, 三方比对, 基准版本走 Raft 强一致
 - **自动扫描** — Agent 自动扫描 Java Spring / Java jar / Python 项目, 进程检测, 生效配置三路合并
 - **扩容迁移** — Leader 编排部署任务, jar 分发、配置写入、进程启停, 状态实时回传
+- **服务器管理** — 自增 ID, 支持 Linux / Windows 类型, SSH 连接测试, 全字段排序与模糊检索
 - **SSH 自动注入** — SSH 推送二进制 + systemd 配置, 远程拉起服务, Raft 节点自动 join, Agent 自动连 Leader
 - **拓扑可视化** — AntV G6 渲染 Raft 节点 + Agent 节点拓扑, Leader/Follower 状态高亮
 - **安全鉴权** — JWT + bcrypt 密码哈希 + 登录限流防爆破, SSH 凭据 AES-GCM 加密存储
@@ -127,14 +129,21 @@
 ### 方式二: 手动启动
 
 ```bash
-# 终端 1: 控制面
+# 终端 1: 控制面 (使用默认配置 config/server.yaml, 文件不存在则用内置默认值)
 cd server && go run ./cmd/server
 
-# 终端 2: Agent
-cd server && go run ./cmd/agent -id agent-1 -server 127.0.0.1:9090
+# 终端 2: Agent (使用默认配置 config/agent.yaml)
+cd server && go run ./cmd/agent
 
 # 终端 3: 前端
 cd web && npm install && npm run dev    # http://localhost:5173
+```
+
+指定配置文件启动:
+
+```bash
+go run ./cmd/server -config /path/to/server.yaml
+go run ./cmd/agent  -config /path/to/agent.yaml
 ```
 
 ### 方式三: Make 构建
@@ -178,21 +187,24 @@ deepsea-ops/
 │   │   ├── crypto/              AES-GCM 加密 (SSH 凭据)
 │   │   ├── sshclient/           SSH 远程操作 (连接/上传/命令)
 │   │   ├── inject/              自动注入 (SSH 推送 + systemd)
+│   │   ├── config/              YAML 配置文件加载
 │   │   ├── configdiff/          三路配置 diff
 │   │   └── proto/agent/         protoc 生成代码
 │   └── proto/agent.proto        gRPC 通信契约
 ├── web/                         Vue 3 前端
 │   └── src/{api,views,styles}/
+├── config/                      配置文件示例
+│   ├── server.yaml.example      控制面配置示例
+│   └── agent.yaml.example       Agent 配置示例
 ├── scripts/                     启动 / 停止脚本
-│   ├── start.sh / start.ps1     开发环境启动
+│   ├── start.sh / start.ps1     开发环境启动 (自动生成配置文件)
 │   └── stop.sh / stop.ps1       停止所有进程
 ├── docs/                        项目文档
 │   ├── images/banner.svg        项目 banner
 │   ├── 架构设计.md
 │   ├── 后端代码导读.md
 │   ├── Raft原理详解.md
-│   ├── 部署指南.md
-│   └── Agent交接文档.md
+│   └── 部署指南.md
 ├── Makefile                     构建脚本
 └── dist/                        构建产物 (gitignore)
 ```
@@ -201,18 +213,40 @@ deepsea-ops/
 
 ## 配置
 
-控制面通过命令行 flag 和环境变量配置:
+v0.5 起改为 YAML 配置文件启动 (参考 Kafka / Elasticsearch), 不再依赖命令行参数。
 
-### 命令行参数
+### 启动参数
 
-| 参数           | 默认值              | 说明                             |
-| ------------ | ---------------- | ------------------------------ |
-| `-id`        | `node1`          | 本节点 Raft ID                    |
-| `-raft-addr` | `127.0.0.1:7000` | Raft 通信地址                      |
-| `-raft-dir`  | `raft-data`      | Raft 数据目录                      |
-| `-join`      | (空)              | 已有集群 Leader 的 Raft 地址; 为空表示首节点 |
-| `-http`      | `:8080`          | HTTP 监听地址                      |
-| `-grpc`      | `:9090`          | gRPC 监听地址                      |
+| 参数       | 默认值                    | 说明                                |
+| -------- | ---------------------- | --------------------------------- |
+| `-config` | `config/server.yaml` (控制面) / `config/agent.yaml` (Agent) | 配置文件路径, 不指定则查找默认路径, 文件不存在用内置默认值 |
+
+### 控制面配置 `config/server.yaml`
+
+```yaml
+# Raft 节点 ID (集群内唯一)
+node_id: node1
+
+raft:
+  addr: 127.0.0.1:7000      # Raft 通信地址 (多节点用内网 IP)
+  data_dir: raft-data        # Raft 数据目录 (必须持久化)
+  join: ""                   # 加入已有集群时填 Leader 的 Raft 地址; 为空表示首节点
+
+http:
+  addr: :8080                # HTTP 监听 (前端 + REST API)
+
+grpc:
+  addr: :9090                # gRPC 监听 (Agent 连接)
+```
+
+### Agent 配置 `config/agent.yaml`
+
+```yaml
+agent_id: agent-1
+server: 127.0.0.1:9090       # 控制面 gRPC 地址
+```
+
+完整示例见 [config/server.yaml.example](config/server.yaml.example) 和 [config/agent.yaml.example](config/agent.yaml.example)。
 
 ### 环境变量
 
@@ -246,7 +280,6 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 | [后端代码导读](docs/后端代码导读.md)        | Go 语法速查 + 逐文件解读 + 数据流, 零 Go 基础可读   |
 | [Raft 原理详解](docs/Raft原理详解.md)   | Raft 每个机制的必要性, Leader/多数派/日志/快照/脑裂 |
 | [部署指南](docs/部署指南.md)            | Linux 集群打包、交叉编译、systemd、nginx、升级   |
-| [Agent 交接文档](docs/Agent交接文档.md) | 项目全貌、历史进度、当前状态                     |
 
 ## 路线图
 
@@ -274,6 +307,14 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
   - SSH 自动注入 (推送二进制 + systemd, Raft 节点自动 join, Agent 自动连 Leader)
   - 入口代理 (任意节点 IP 可访问 UI, 写请求转发 Leader, 读请求本地)
   - 深度代码审查, 修复 17 处缺陷
+
+- **v0.5** 配置文件启动 + 服务器管理重构 ✅
+  
+  - YAML 配置文件启动 (参考 Kafka / ES, `-config` 指定路径, 默认 `config/server.yaml`)
+  - 服务器模型重构: ID 改为数字自增, 新增 OS 类型 (Linux/Windows, 默认 Linux)
+  - 服务器导入支持 SSH 用户名/密码, 可测试连接状态
+  - 服务器列表支持全字段排序 + 全字段模糊检索
+  - 清理无用文档和脚本
 
 - **后续**
   

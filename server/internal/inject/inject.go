@@ -126,9 +126,22 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 		return result
 	}
 
+	// 4.5 上传 YAML 配置文件 (v0.5: 改为配置文件启动)
+	remoteCfgPath := "/opt/deepsea/config/" + string(req.Role) + ".yaml"
+	cfgContent := genConfigContent(req)
+	if _, err := client.RunCommand("mkdir -p /opt/deepsea/config"); err != nil {
+		result.Output = "创建配置目录失败: " + err.Error()
+		return result
+	}
+	if err := client.UploadContent([]byte(cfgContent), remoteCfgPath); err != nil {
+		result.Output = "上传配置文件失败: " + err.Error()
+		return result
+	}
+	steps = append(steps, "已写入配置文件 "+remoteCfgPath)
+
 	// 5. 生成 systemd 配置并上传
 	serviceName := "deepsea-" + string(req.Role)
-	serviceContent := genSystemdService(serviceName, remoteBinPath, req)
+	serviceContent := genSystemdService(serviceName, remoteBinPath, remoteCfgPath)
 	remoteServicePath := "/etc/systemd/system/" + serviceName + ".service"
 	if err := client.UploadContent([]byte(serviceContent), remoteServicePath); err != nil {
 		result.Output = "上传 systemd 配置失败: " + err.Error()
@@ -162,20 +175,33 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	return result
 }
 
-// genSystemdService 生成 systemd service 文件内容。
-func genSystemdService(name, binPath string, req InjectRequest) string {
-	var execStart string
+// genConfigContent 生成远程节点的 YAML 配置文件内容。
+func genConfigContent(req InjectRequest) string {
 	if req.Role == RoleRaft {
-		// deepsea-server -id node2 -raft-addr 0.0.0.0:7000 -join <leaderAddr>
-		// 监听用 0.0.0.0(绑所有网卡), AddVoter 用实际 IP
+		// Raft 节点: 监听用 0.0.0.0(绑所有网卡), AddVoter 用实际 IP
 		listenAddr := "0.0.0.0:" + portFromAddr(req.RaftAddr)
-		execStart = fmt.Sprintf("%s -id %s -raft-addr %s -join %s -http :8080 -grpc :9090",
-			binPath, req.NodeID, listenAddr, req.JoinAddr)
-	} else {
-		// deepsea-agent -id agent-3 -server <leaderGRPC>
-		execStart = fmt.Sprintf("%s -id %s -server %s",
-			binPath, req.NodeID, req.LeaderGRPCAddr)
+		return fmt.Sprintf(`# deepsea-server 配置 (自动注入生成)
+node_id: %s
+raft:
+  addr: %s
+  data_dir: /opt/deepsea/data
+  join: %q
+http:
+  addr: :8080
+grpc:
+  addr: :9090
+`, req.NodeID, listenAddr, req.JoinAddr)
 	}
+	// Agent 节点
+	return fmt.Sprintf(`# deepsea-agent 配置 (自动注入生成)
+agent_id: %s
+server: %s
+`, req.NodeID, req.LeaderGRPCAddr)
+}
+
+// genSystemdService 生成 systemd service 文件内容。
+func genSystemdService(name, binPath, cfgPath string) string {
+	execStart := fmt.Sprintf("%s -config %s", binPath, cfgPath)
 
 	return fmt.Sprintf(`[Unit]
 Description=DeepSea Ops %s

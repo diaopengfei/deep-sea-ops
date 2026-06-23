@@ -9,15 +9,23 @@ import (
 	"syscall"
 
 	"github.com/deepsea-ops/server/internal/agentclient"
+	"github.com/deepsea-ops/server/internal/config"
 )
 
 func main() {
-	// 命令行参数: Agent ID 和控制面地址
-	agentID := flag.String("id", "agent-1", "Agent 唯一 ID")
-	serverAddr := flag.String("server", "127.0.0.1:9090", "控制面 gRPC 地址")
+	// -config 指定配置文件路径, 为空则默认查找 ./config/agent.yaml
+	configPath := flag.String("config", "", "配置文件路径 (默认: config/agent.yaml)")
 	flag.Parse()
 
-	c, err := agentclient.New(*agentID, *serverAddr)
+	// 加载配置: 配置文件不存在时用内置默认值(向后兼容)
+	cfg, err := config.LoadAgent(*configPath)
+	if err != nil {
+		log.Fatalf("加载配置失败: %v", err)
+	}
+
+	log.Printf("配置加载完成: agent_id=%s, server=%s", cfg.AgentID, cfg.Server)
+
+	c, err := agentclient.New(cfg.AgentID, cfg.Server)
 	if err != nil {
 		log.Fatalf("创建 Agent 失败: %v", err)
 	}
@@ -34,7 +42,7 @@ func main() {
 		cancel()
 	}()
 
-	log.Printf("Agent %s 启动, 连接 %s", *agentID, *serverAddr)
+	log.Printf("Agent %s 启动, 连接 %s", cfg.AgentID, cfg.Server)
 	if err := c.Run(ctx); err != nil {
 		log.Printf("Agent 退出: %v", err)
 	}

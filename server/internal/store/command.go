@@ -12,18 +12,21 @@ import (
 //
 // Op 字段决定命令类型, 不同命令携带不同数据(用对应字段, 其余为零值)。
 type command struct {
-	Op         string             `json:"op"`         // 操作类型
-	Server     model.Server       `json:"server"`     // add_server 时携带
-	User       model.User         `json:"user"`       // add_user 时携带
-	Project    model.ProjectRecord `json:"project"`   // add_project / del_project 时携带
-	Task       model.DeployTask   `json:"task"`       // add_deploy_task / upd_deploy_task 时携带
-	CredID     string             `json:"credId"`     // 凭据 ID(del_credential 用)
-	Credential model.SSHCredential `json:"credential"` // add_credential 时携带
+	Op          string              `json:"op"`          // 操作类型
+	Server      model.Server        `json:"server"`      // add_server / upd_server 时携带
+	ServerID    string              `json:"serverId"`    // del_server 时携带
+	User        model.User          `json:"user"`        // add_user 时携带
+	Project     model.ProjectRecord `json:"project"`     // add_project / del_project 时携带
+	Task        model.DeployTask    `json:"task"`        // add_deploy_task / upd_deploy_task 时携带
+	CredID      string              `json:"credId"`      // 凭据 ID(del_credential 用)
+	Credential  model.SSHCredential `json:"credential"`  // add_credential 时携带
 }
 
 // op 常量, 避免到处写字符串字面量(笔误难以排查)。
 const (
 	opAddServer          = "add_server"
+	opUpdServer          = "upd_server"
+	opDelServer          = "del_server"
 	opAddUser            = "add_user"
 	opAddProject         = "add_project"
 	opDelProject         = "del_project"

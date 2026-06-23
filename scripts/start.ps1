@@ -9,6 +9,9 @@
 #   .\scripts\start.ps1 -Mode agent  # 仅 Agent
 #   .\scripts\start.ps1 -Mode web    # 仅前端
 #
+# 启动方式: 为每个节点生成 YAML 配置文件到 .run\config\, 通过 -config 启动
+# (参考 Kafka / Elasticsearch 的配置文件启动方式)
+#
 # 停止: .\scripts\stop.ps1
 # ============================================================================
 param(
@@ -22,7 +25,9 @@ $Root = (Resolve-Path "$PSScriptRoot\..").Path
 $ServerDir = Join-Path $Root "server"
 $WebDir = Join-Path $Root "web"
 $RunDir = Join-Path $Root ".run"
+$CfgDir = Join-Path $RunDir "config"
 if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
+if (-not (Test-Path $CfgDir)) { New-Item -ItemType Directory -Path $CfgDir | Out-Null }
 
 # ---------- 环境变量 (开发默认值, 生产请覆盖) ----------
 if (-not $env:JWT_SECRET)     { $env:JWT_SECRET = "dev-secret-change-me" }
@@ -39,6 +44,48 @@ function Check-Cmd {
 }
 Check-Cmd "go"
 Check-Cmd "npm"
+
+# ---------- 生成 YAML 配置文件 ----------
+function Write-ServerConfig {
+    param(
+        [string]$Id,
+        [string]$RaftAddr,
+        [string]$RaftDir,
+        [string]$Join,
+        [string]$HttpAddr,
+        [string]$GrpcAddr
+    )
+    $cfgFile = Join-Path $CfgDir "server-$Id.yaml"
+    $content = @"
+# 自动生成: 开发环境控制面配置 (节点 $Id)
+node_id: $Id
+raft:
+  addr: $RaftAddr
+  data_dir: $RaftDir
+  join: "$Join"
+http:
+  addr: $HttpAddr
+grpc:
+  addr: $GrpcAddr
+"@
+    Set-Content -Path $cfgFile -Value $content -Encoding UTF8
+    return $cfgFile
+}
+
+function Write-AgentConfig {
+    param(
+        [string]$Id,
+        [string]$ServerAddr
+    )
+    $cfgFile = Join-Path $CfgDir "agent-$Id.yaml"
+    $content = @"
+# 自动生成: 开发环境 Agent 配置 ($Id)
+agent_id: $Id
+server: $ServerAddr
+"@
+    Set-Content -Path $cfgFile -Value $content -Encoding UTF8
+    return $cfgFile
+}
 
 # ---------- 工具函数 ----------
 function Start-Bg {
@@ -76,9 +123,8 @@ function Start-Server {
     )
     if (-not $RaftDir) { $RaftDir = Join-Path $RunDir "raft-$Id" }
     if (-not (Test-Path $RaftDir)) { New-Item -ItemType Directory -Path $RaftDir -Force | Out-Null }
-    $args = @("go", "run", "./cmd/server", "-id", $Id, "-raft-addr", $RaftAddr, "-raft-dir", $RaftDir, "-http", $HttpAddr, "-grpc", $GrpcAddr)
-    if ($Join) { $args += @("-join", $Join) }
-    $cmd = { Set-Location $using:ServerDir; & $using:args[0] $using:args[1..($using:args.Length-1)] }
+    $cfgFile = Write-ServerConfig -Id $Id -RaftAddr $RaftAddr -RaftDir $RaftDir -Join $Join -HttpAddr $HttpAddr -GrpcAddr $GrpcAddr
+    $cmd = { Set-Location $using:ServerDir; go run ./cmd/server -config $using:cfgFile }
     Start-Bg -Name "server-$Id" -Command $cmd -WorkDir $ServerDir
 }
 
@@ -87,7 +133,8 @@ function Start-Agent {
         [string]$Id = "agent-1",
         [string]$ServerAddr = "127.0.0.1:9090"
     )
-    $cmd = { Set-Location $using:ServerDir; go run ./cmd/agent -id $using:Id -server $using:ServerAddr }
+    $cfgFile = Write-AgentConfig -Id $Id -ServerAddr $ServerAddr
+    $cmd = { Set-Location $using:ServerDir; go run ./cmd/agent -config $using:cfgFile }
     Start-Bg -Name "agent-$Id" -Command $cmd -WorkDir $ServerDir
 }
 
@@ -140,5 +187,6 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " 前端:     http://localhost:5173"
 Write-Host " 控制面:   http://localhost:8080"
 Write-Host " 默认账号: admin / $env:ADMIN_PASSWORD"
+Write-Host " 配置文件: $CfgDir\"
 Write-Host " 停止:     .\scripts\stop.ps1"
 Write-Host "========================================" -ForegroundColor Cyan

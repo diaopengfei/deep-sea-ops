@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 
 	"github.com/hashicorp/raft"
 	"go.etcd.io/bbolt"
@@ -63,7 +64,11 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 	err := f.db.Update(func(tx *bbolt.Tx) error {
 		switch cmd.Op {
 		case opAddServer:
-			return f.applyAddServer(tx, cmd.Server)
+			return f.applyAddServer(tx, &cmd.Server)
+		case opUpdServer:
+			return f.applyUpdServer(tx, &cmd.Server)
+		case opDelServer:
+			return f.applyDelServer(tx, cmd.ServerID)
 		case opAddUser:
 			return f.applyAddUser(tx, cmd.User)
 		case opAddProject:
@@ -88,18 +93,51 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 		log.Printf("FSM Apply 失败: %v", err)
 		return err
 	}
+	// add_server 返回分配的自增 ID, 供 API 层返回给调用方
+	if cmd.Op == opAddServer {
+		return cmd.Server.ID
+	}
 	return nil
 }
 
 // --- 服务器 ---
 
-func (f *FSM) applyAddServer(tx *bbolt.Tx, srv model.Server) error {
+// applyAddServer 新增服务器。ID 为 0 时自动分配自增 ID(Raft 顺序执行, 无并发问题)。
+func (f *FSM) applyAddServer(tx *bbolt.Tx, srv *model.Server) error {
+	b := tx.Bucket(serversBucket)
+	if srv.ID == 0 {
+		// 自增 ID: 扫描现有最大 ID + 1
+		maxID := int64(0)
+		_ = b.ForEach(func(k, v []byte) error {
+			var s model.Server
+			if json.Unmarshal(v, &s) == nil && s.ID > maxID {
+				maxID = s.ID
+			}
+			return nil
+		})
+		srv.ID = maxID + 1
+	}
+	val, err := json.Marshal(srv)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(strconv.FormatInt(srv.ID, 10)), val)
+}
+
+// applyUpdServer 更新服务器(覆盖写)。
+func (f *FSM) applyUpdServer(tx *bbolt.Tx, srv *model.Server) error {
 	b := tx.Bucket(serversBucket)
 	val, err := json.Marshal(srv)
 	if err != nil {
 		return err
 	}
-	return b.Put([]byte(srv.ID), val)
+	return b.Put([]byte(strconv.FormatInt(srv.ID, 10)), val)
+}
+
+// applyDelServer 按 ID 删除服务器。
+func (f *FSM) applyDelServer(tx *bbolt.Tx, id string) error {
+	b := tx.Bucket(serversBucket)
+	return b.Delete([]byte(id))
 }
 
 func (f *FSM) List() []model.Server {

@@ -143,9 +143,38 @@ func (s *Store) waitForLeader(timeout time.Duration) error {
 
 // --- 服务器相关 ---
 
-// AddServer 提交"新增服务器"命令到 Raft。
-func (s *Store) AddServer(srv model.Server) error {
+// AddServer 提交"新增服务器"命令到 Raft, 返回 FSM 分配的自增 ID。
+func (s *Store) AddServer(srv model.Server) (int64, error) {
 	cmd := command{Op: opAddServer, Server: srv}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("序列化命令: %w", err)
+	}
+	f := s.raft.Apply(data, 5*time.Second)
+	if err := f.Error(); err != nil {
+		return 0, fmt.Errorf("apply 命令: %w", err)
+	}
+	// FSM.Apply 返回分配的 ID 或 error
+	if resp := f.Response(); resp != nil {
+		if e, ok := resp.(error); ok {
+			return 0, e
+		}
+		if id, ok := resp.(int64); ok {
+			return id, nil
+		}
+	}
+	return 0, nil
+}
+
+// UpdServer 提交"更新服务器"命令到 Raft。
+func (s *Store) UpdServer(srv model.Server) error {
+	cmd := command{Op: opUpdServer, Server: srv}
+	return s.apply(cmd)
+}
+
+// DelServer 提交"删除服务器"命令到 Raft。
+func (s *Store) DelServer(id string) error {
+	cmd := command{Op: opDelServer, ServerID: id}
 	return s.apply(cmd)
 }
 

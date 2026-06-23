@@ -10,6 +10,9 @@
 #   ./scripts/start.sh agent        # 仅 Agent
 #   ./scripts/start.sh web          # 仅前端
 #
+# 启动方式: 为每个节点生成 YAML 配置文件到 .run/config/, 通过 -config 启动
+# (参考 Kafka / Elasticsearch 的配置文件启动方式)
+#
 # 停止: ./scripts/stop.sh
 # ============================================================================
 set -euo pipefail
@@ -18,7 +21,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_DIR="$ROOT/server"
 WEB_DIR="$ROOT/web"
 PID_DIR="$ROOT/.run"
-mkdir -p "$PID_DIR"
+CFG_DIR="$PID_DIR/config"
+mkdir -p "$PID_DIR" "$CFG_DIR"
 
 MODE="${1:-dev}"
 
@@ -33,6 +37,38 @@ check_cmd() {
 }
 check_cmd go
 check_cmd npm
+
+# ---------- 生成 YAML 配置文件 ----------
+# gen_server_config <id> <raft_addr> <raft_dir> <join> <http_addr> <grpc_addr>
+gen_server_config() {
+    local id="$1" raft_addr="$2" raft_dir="$3" join="$4" http_addr="$5" grpc_addr="$6"
+    local cfg_file="$CFG_DIR/server-$id.yaml"
+    cat >"$cfg_file" <<EOF
+# 自动生成: 开发环境控制面配置 (节点 $id)
+node_id: $id
+raft:
+  addr: $raft_addr
+  data_dir: $raft_dir
+  join: "$join"
+http:
+  addr: $http_addr
+grpc:
+  addr: $grpc_addr
+EOF
+    echo "$cfg_file"
+}
+
+# gen_agent_config <id> <server_addr>
+gen_agent_config() {
+    local id="$1" server_addr="$2"
+    local cfg_file="$CFG_DIR/agent-$id.yaml"
+    cat >"$cfg_file" <<EOF
+# 自动生成: 开发环境 Agent 配置 ($id)
+agent_id: $id
+server: $server_addr
+EOF
+    echo "$cfg_file"
+}
 
 # ---------- 工具函数 ----------
 start_bg() {
@@ -56,15 +92,17 @@ start_server() {
     local http_addr="${5:-:8080}"
     local grpc_addr="${6:-:9090}"
     mkdir -p "$raft_dir"
-    local args=(go run ./cmd/server -id "$id" -raft-addr "$raft_addr" -raft-dir "$raft_dir" -http "$http_addr" -grpc "$grpc_addr")
-    [[ -n "$join" ]] && args+=(-join "$join")
-    start_bg "server-$id" bash -c "cd '$SERVER_DIR' && ${args[*]}"
+    local cfg_file
+    cfg_file=$(gen_server_config "$id" "$raft_addr" "$raft_dir" "$join" "$http_addr" "$grpc_addr")
+    start_bg "server-$id" bash -c "cd '$SERVER_DIR' && go run ./cmd/server -config '$cfg_file'"
 }
 
 start_agent() {
     local id="${1:-agent-1}"
     local server_addr="${2:-127.0.0.1:9090}"
-    start_bg "agent-$id" bash -c "cd '$SERVER_DIR' && go run ./cmd/agent -id '$id' -server '$server_addr'"
+    local cfg_file
+    cfg_file=$(gen_agent_config "$id" "$server_addr")
+    start_bg "agent-$id" bash -c "cd '$SERVER_DIR' && go run ./cmd/agent -config '$cfg_file'"
 }
 
 start_web() {
@@ -86,7 +124,6 @@ case "$MODE" in
         start_server "node1" "127.0.0.1:7001" "$PID_DIR/raft-node1" "" ":8080" ":9090"
         sleep 3
         # node2 / node3: 加入集群, HTTP 8081/8082, gRPC 9091/9092, Raft 7002/7003
-        # 注: 加入集群需通过 /api/cluster/join 接口, 此处先启动节点再手动 join
         start_server "node2" "127.0.0.1:7002" "$PID_DIR/raft-node2" "127.0.0.1:7001" ":8081" ":9091"
         start_server "node3" "127.0.0.1:7003" "$PID_DIR/raft-node3" "127.0.0.1:7001" ":8082" ":9092"
         sleep 2
@@ -127,5 +164,6 @@ echo "========================================"
 echo " 前端:     http://localhost:5173"
 echo " 控制面:   http://localhost:8080"
 echo " 默认账号: admin / ${ADMIN_PASSWORD}"
+echo " 配置文件: $CFG_DIR/"
 echo " 停止:     ./scripts/stop.sh"
 echo "========================================"

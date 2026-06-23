@@ -1,0 +1,9 @@
+# deepsea-agent 配置文件
+# 复制为 agent.yaml 后修改。启动时通过 -config config/agent.yaml 指定路径,
+# 不指定则默认查找 ./config/agent.yaml, 文件不存在则用内置默认值。
+
+# Agent 唯一 ID (如 agent-1 / agent-2)
+agent_id: agent-1
+
+# 控制面 gRPC 地址 (Agent 连接此地址建立长连接)
+server: 127.0.0.1:9090

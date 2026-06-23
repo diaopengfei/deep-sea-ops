@@ -34,13 +34,58 @@ export default http
 // --- 服务器管理 ---
 import type { Server } from './types'
 
-export async function listServers(): Promise<Server[]> {
-  const res = await http.get<Server[]>('/servers')
+// 列表查询参数
+export interface ListServersParams {
+  keyword?: string  // 模糊检索 (匹配 name/ip/username/os/status/id)
+  sort?: string     // 排序字段: id/name/ip/port/os/username/status/createdAt
+  order?: 'asc' | 'desc'
+}
+
+export async function listServers(params?: ListServersParams): Promise<Server[]> {
+  const res = await http.get<Server[]>('/servers', { params })
   return res.data
 }
 
-export async function addServer(s: Server): Promise<Server> {
+// 新增服务器请求(不含 id, 后端自动分配)
+export interface AddServerRequest {
+  name: string
+  ip: string
+  port?: number
+  os?: string        // 'linux' | 'windows', 默认 'linux'
+  username: string
+  password: string
+}
+
+export async function addServer(s: AddServerRequest): Promise<Server> {
   const res = await http.post<Server>('/servers', s)
+  return res.data
+}
+
+export async function deleteServer(id: number): Promise<void> {
+  await http.delete(`/servers/${id}`)
+}
+
+export async function updateServer(id: number, s: Partial<AddServerRequest> & { status?: string }): Promise<Server> {
+  const res = await http.put<Server>(`/servers/${id}`, s)
+  return res.data
+}
+
+// SSH 连接测试请求
+export interface TestConnectionRequest {
+  ip: string
+  port?: number
+  username: string
+  password: string
+}
+
+export interface TestConnectionResult {
+  ok: boolean
+  error?: string
+  msg?: string
+}
+
+export async function testConnection(req: TestConnectionRequest): Promise<TestConnectionResult> {
+  const res = await http.post<TestConnectionResult>('/servers/test-connection', req)
   return res.data
 }
 
