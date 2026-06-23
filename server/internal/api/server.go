@@ -2,8 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -333,7 +331,9 @@ func handleScanProjects(w http.ResponseWriter, r *http.Request, gs *grpcserver.S
 
 	// M4: 把扫描结果持久化到 Raft(projects bucket), 多节点共享视图
 	// 先清除该 Agent 的旧项目记录, 再写入新的
-	_ = s.ClearAgentProjects(agentID)
+	if err := s.ClearAgentProjects(agentID); err != nil {
+		log.Printf("警告: 清除 Agent %s 旧项目记录失败: %v", agentID, err)
+	}
 
 	// 解析扫描结果 JSON, 转成 ProjectRecord 持久化
 	var result struct {
@@ -357,8 +357,12 @@ func handleScanProjects(w http.ResponseWriter, r *http.Request, gs *grpcserver.S
 				PID:         p.PID,
 				ScannedAt:   now,
 			}
-			_ = s.AddProject(rec)
+			if err := s.AddProject(rec); err != nil {
+				log.Printf("警告: 持久化项目 %s 失败: %v", rec.ID, err)
+			}
 		}
+	} else {
+		log.Printf("警告: 解析扫描结果 JSON 失败, 未持久化: %v", err)
 	}
 
 	// 返回原始扫描结果(含生效配置等完整信息)
@@ -418,18 +422,22 @@ func executeDeployTask(s *store.Store, gs *grpcserver.Server, task model.DeployT
 	// 标记为运行中
 	task.Status = model.DeployStatusRunning
 	task.UpdatedAt = time.Now()
-	_ = s.UpdDeployTask(task)
+	if err := s.UpdDeployTask(task); err != nil {
+		log.Printf("警告: 更新任务 %s 状态为 running 失败: %v", task.ID, err)
+	}
 
 	// 下发 DEPLOY 指令到目标 Agent
 	params := map[string]string{
-		"jarPath":    task.JarPath,
-		"configText": task.ConfigText,
+		"jarPath":     task.JarPath,
+		"configText":  task.ConfigText,
 		"projectName": task.ProjectName,
 	}
 	if task.Type == model.DeployTypeMigrate && task.SourceAgentID != "" {
 		// 迁移: 先停源 Agent 上的项目
 		stopParams := map[string]string{"projectPath": task.ProjectPath}
-		_, _ = gs.SendCommand(task.SourceAgentID, "STOP_PROJECT", stopParams, 30*time.Second)
+		if _, err := gs.SendCommand(task.SourceAgentID, "STOP_PROJECT", stopParams, 30*time.Second); err != nil {
+			log.Printf("警告: 迁移任务 %s 停止源 Agent %s 项目失败: %v", task.ID, task.SourceAgentID, err)
+		}
 	}
 
 	// 在目标 Agent 上执行部署
@@ -440,10 +448,12 @@ func executeDeployTask(s *store.Store, gs *grpcserver.Server, task model.DeployT
 	} else {
 		task.Status = model.DeployStatusSuccess
 		task.Error = ""
-		_ = output
+		log.Printf("部署任务 %s 成功: %s", task.ID, output)
 	}
 	task.UpdatedAt = time.Now()
-	_ = s.UpdDeployTask(task)
+	if err := s.UpdDeployTask(task); err != nil {
+		log.Printf("警告: 更新任务 %s 最终状态失败: %v", task.ID, err)
+	}
 }
 
 // handleDeploy 直接对指定 Agent 下发部署指令。
@@ -548,16 +558,6 @@ func handleAddCredential(w http.ResponseWriter, r *http.Request, s *store.Store)
 	}
 	auth.WriteJSON(w, http.StatusCreated, cred)
 }
-
-// formatErr 统一错误格式化
-func formatErr(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
-var _ = fmt.Sprintf
 
 // --- 自动注入(v0.4) ---
 
@@ -667,6 +667,13 @@ func withLeaderProxy(next http.Handler, s *store.Store) http.Handler {
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(target)
+		// 自定义错误处理: Leader 不可达时返回明确错误, 而非空响应
+		proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+			log.Printf("入口代理: 转发到 Leader %s 失败: %v", leaderHTTPAddr, err)
+			auth.WriteJSON(rw, http.StatusBadGateway, map[string]string{
+				"error": "转发到 Leader 失败: " + err.Error(),
+			})
+		}
 		// 记录转发日志
 		log.Printf("入口代理: 转发 %s %s -> Leader %s", r.Method, r.URL.Path, leaderHTTPAddr)
 		proxy.ServeHTTP(w, r)
@@ -698,6 +705,3 @@ func deriveHTTPAddr(raftAddr string) string {
 	}
 	return raftAddr[:idx] + ":8080"
 }
-
-// 保留 io 引用(UploadContent 等用到 io.Writer)
-var _ = io.Discard

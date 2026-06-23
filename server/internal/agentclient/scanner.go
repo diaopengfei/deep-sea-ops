@@ -1,7 +1,6 @@
 package agentclient
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,33 +218,6 @@ func projectExists(result *ScanResult, path string, ptype ProjectType) bool {
 	}
 	return false
 }
-
-// defaultScanDirs 返回默认扫描目录
-func defaultScanDirs() []string {
-	return []string{"/home", "/data"}
-}
-
-// parseScanDirs 从环境变量 SCAN_DIRS 解析扫描目录(逗号分隔)
-func parseScanDirs() []string {
-	dirs := os.Getenv("SCAN_DIRS")
-	if dirs == "" {
-		return defaultScanDirs()
-	}
-	var result []string
-	for _, d := range strings.Split(dirs, ",") {
-		d = strings.TrimSpace(d)
-		if d != "" {
-			result = append(result, d)
-		}
-	}
-	if len(result) == 0 {
-		return defaultScanDirs()
-	}
-	return result
-}
-
-// 确保使用 io/fs(避免 unused import 如果将来扩展)
-var _ fs.DirEntry
 
 // EnrichScanResult 在扫描完成后, 为每个项目补充运行状态和生效配置。
 //

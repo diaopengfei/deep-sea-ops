@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path/filepath"
 
 	"github.com/hashicorp/raft"
 	"go.etcd.io/bbolt"
@@ -32,7 +31,7 @@ type FSM struct {
 
 // NewFSM 打开(或创建)bbolt 文件, 并确保所有 bucket 存在。
 func NewFSM(dbPath string) (*FSM, error) {
-	db, err := bbolt.Open(filepath.Join(filepath.Dir(dbPath), filepath.Base(dbPath)), 0o600, nil)
+	db, err := bbolt.Open(dbPath, 0o600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("打开 bbolt: %w", err)
 	}
@@ -105,7 +104,7 @@ func (f *FSM) applyAddServer(tx *bbolt.Tx, srv model.Server) error {
 
 func (f *FSM) List() []model.Server {
 	out := make([]model.Server, 0)
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(serversBucket)
 		return b.ForEach(func(k, v []byte) error {
 			var s model.Server
@@ -115,7 +114,9 @@ func (f *FSM) List() []model.Server {
 			out = append(out, s)
 			return nil
 		})
-	})
+	}); err != nil {
+		log.Printf("FSM List 读取失败: %v", err)
+	}
 	return out
 }
 
@@ -132,7 +133,7 @@ func (f *FSM) applyAddUser(tx *bbolt.Tx, u model.User) error {
 
 func (f *FSM) GetUser(username string) (*model.User, bool) {
 	var u *model.User
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(usersBucket)
 		val := b.Get([]byte(username))
 		if val == nil {
@@ -140,7 +141,10 @@ func (f *FSM) GetUser(username string) (*model.User, bool) {
 		}
 		u = &model.User{}
 		return json.Unmarshal(val, u)
-	})
+	}); err != nil {
+		log.Printf("FSM GetUser 读取失败: %v", err)
+		return nil, false
+	}
 	if u == nil {
 		return nil, false
 	}
@@ -149,7 +153,7 @@ func (f *FSM) GetUser(username string) (*model.User, bool) {
 
 func (f *FSM) ListUsers() []model.User {
 	var out = make([]model.User, 0)
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(usersBucket)
 		return b.ForEach(func(k, v []byte) error {
 			var u model.User
@@ -159,7 +163,9 @@ func (f *FSM) ListUsers() []model.User {
 			out = append(out, u)
 			return nil
 		})
-	})
+	}); err != nil {
+		log.Printf("FSM ListUsers 读取失败: %v", err)
+	}
 	return out
 }
 
@@ -201,7 +207,7 @@ func (f *FSM) applyClearAgentProjects(tx *bbolt.Tx, agentID string) error {
 // ListProjects 列出所有项目记录。可选按 agentID 过滤。
 func (f *FSM) ListProjects(agentID string) []model.ProjectRecord {
 	out := make([]model.ProjectRecord, 0)
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(projectsBucket)
 		return b.ForEach(func(k, v []byte) error {
 			var p model.ProjectRecord
@@ -214,14 +220,16 @@ func (f *FSM) ListProjects(agentID string) []model.ProjectRecord {
 			out = append(out, p)
 			return nil
 		})
-	})
+	}); err != nil {
+		log.Printf("FSM ListProjects 读取失败: %v", err)
+	}
 	return out
 }
 
 // GetProject 按 ID 查单个项目。
 func (f *FSM) GetProject(id string) (*model.ProjectRecord, bool) {
 	var p *model.ProjectRecord
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(projectsBucket)
 		val := b.Get([]byte(id))
 		if val == nil {
@@ -229,7 +237,10 @@ func (f *FSM) GetProject(id string) (*model.ProjectRecord, bool) {
 		}
 		p = &model.ProjectRecord{}
 		return json.Unmarshal(val, p)
-	})
+	}); err != nil {
+		log.Printf("FSM GetProject 读取失败: %v", err)
+		return nil, false
+	}
 	if p == nil {
 		return nil, false
 	}
@@ -253,7 +264,7 @@ func (f *FSM) applyUpdDeployTask(tx *bbolt.Tx, t model.DeployTask) error {
 
 func (f *FSM) ListDeployTasks() []model.DeployTask {
 	out := make([]model.DeployTask, 0)
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(deployTasksBucket)
 		return b.ForEach(func(k, v []byte) error {
 			var t model.DeployTask
@@ -263,13 +274,15 @@ func (f *FSM) ListDeployTasks() []model.DeployTask {
 			out = append(out, t)
 			return nil
 		})
-	})
+	}); err != nil {
+		log.Printf("FSM ListDeployTasks 读取失败: %v", err)
+	}
 	return out
 }
 
 func (f *FSM) GetDeployTask(id string) (*model.DeployTask, bool) {
 	var t *model.DeployTask
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(deployTasksBucket)
 		val := b.Get([]byte(id))
 		if val == nil {
@@ -277,7 +290,10 @@ func (f *FSM) GetDeployTask(id string) (*model.DeployTask, bool) {
 		}
 		t = &model.DeployTask{}
 		return json.Unmarshal(val, t)
-	})
+	}); err != nil {
+		log.Printf("FSM GetDeployTask 读取失败: %v", err)
+		return nil, false
+	}
 	if t == nil {
 		return nil, false
 	}
@@ -302,7 +318,7 @@ func (f *FSM) applyDelCredential(tx *bbolt.Tx, id string) error {
 
 func (f *FSM) GetCredential(id string) (*model.SSHCredential, bool) {
 	var c *model.SSHCredential
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(credentialsBucket)
 		val := b.Get([]byte(id))
 		if val == nil {
@@ -310,7 +326,10 @@ func (f *FSM) GetCredential(id string) (*model.SSHCredential, bool) {
 		}
 		c = &model.SSHCredential{}
 		return json.Unmarshal(val, c)
-	})
+	}); err != nil {
+		log.Printf("FSM GetCredential 读取失败: %v", err)
+		return nil, false
+	}
 	if c == nil {
 		return nil, false
 	}
@@ -319,7 +338,7 @@ func (f *FSM) GetCredential(id string) (*model.SSHCredential, bool) {
 
 func (f *FSM) ListCredentials() []model.SSHCredential {
 	out := make([]model.SSHCredential, 0)
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(credentialsBucket)
 		return b.ForEach(func(k, v []byte) error {
 			var c model.SSHCredential
@@ -329,7 +348,9 @@ func (f *FSM) ListCredentials() []model.SSHCredential {
 			out = append(out, c)
 			return nil
 		})
-	})
+	}); err != nil {
+		log.Printf("FSM ListCredentials 读取失败: %v", err)
+	}
 	return out
 }
 
@@ -352,7 +373,7 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		DeployTasks: make(map[string]model.DeployTask),
 		Credentials: make(map[string]model.SSHCredential),
 	}
-	f.db.View(func(tx *bbolt.Tx) error {
+	if err := f.db.View(func(tx *bbolt.Tx) error {
 		readBucket := func(name []byte, fn func(k, v []byte) error) {
 			if b := tx.Bucket(name); b != nil {
 				_ = b.ForEach(fn)
@@ -394,7 +415,9 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 			return nil
 		})
 		return nil
-	})
+	}); err != nil {
+		log.Printf("FSM Snapshot 读取失败: %v", err)
+	}
 	return &fsmSnapshot{data: data}, nil
 }
 

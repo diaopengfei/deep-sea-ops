@@ -1,4 +1,4 @@
-﻿package auth
+package auth
 
 import (
 	"context"
@@ -210,14 +210,15 @@ type loginLimiter struct {
 }
 
 type failRecord struct {
-	count    int
+	count     int
 	lockUntil time.Time
+	lastFail  time.Time // 最近一次失败的时间, 用于判断失败窗口是否过期
 }
 
 const (
-	maxLoginFails     = 5              // 连续失败 5 次后锁定
-	lockDuration      = 15 * time.Minute // 锁定 15 分钟
-	failWindow        = 30 * time.Minute // 失败计数窗口
+	maxLoginFails  = 5                // 连续失败 5 次后锁定
+	lockDuration   = 15 * time.Minute // 锁定 15 分钟
+	failWindow     = 30 * time.Minute // 失败计数窗口(超过此时间重置计数)
 )
 
 // Allow 判断该用户名当前是否允许尝试登录(未被锁定)。
@@ -228,11 +229,12 @@ func (l *loginLimiter) Allow(username string) bool {
 	if !ok {
 		return true
 	}
+	// 锁定期内禁止登录
 	if time.Now().Before(r.lockUntil) {
 		return false
 	}
-	// 超过失败窗口则重置
-	if time.Since(r.lockUntil.Add(failWindow)) > 0 && r.count >= maxLoginFails {
+	// 超过失败窗口(距上次失败超过 failWindow)则重置计数
+	if !r.lastFail.IsZero() && time.Since(r.lastFail) > failWindow {
 		delete(l.failures, username)
 	}
 	return true
@@ -247,7 +249,12 @@ func (l *loginLimiter) RecordFail(username string) {
 		r = &failRecord{}
 		l.failures[username] = r
 	}
+	// 超过失败窗口则重置计数(新一轮失败开始)
+	if !r.lastFail.IsZero() && time.Since(r.lastFail) > failWindow {
+		r.count = 0
+	}
 	r.count++
+	r.lastFail = time.Now()
 	if r.count >= maxLoginFails {
 		r.lockUntil = time.Now().Add(lockDuration)
 	}

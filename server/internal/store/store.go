@@ -280,7 +280,7 @@ func (s *Store) ClusterInfo() ClusterInfo {
 		ID:      s.nodeID,
 		State:   s.raft.State().String(),
 		Leader:  string(s.raft.Leader()),
-		Term:    fmt.Sprintf("%s", s.raft.Stats()["term"]),
+		Term:    s.raft.Stats()["term"],
 		Servers: servers,
 	}
 }

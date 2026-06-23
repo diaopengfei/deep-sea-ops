@@ -7,8 +7,6 @@ package sshclient
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -167,15 +165,3 @@ func (c *Client) UploadContent(content []byte, remotePath string) error {
 	}
 	return nil
 }
-
-// HostPort 返回 host:port 字符串(用于日志)。
-func (c *Config) HostPort() string {
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-	return net.JoinHostPort(c.Host, fmt.Sprintf("%d", port))
-}
-
-// 保留 io 引用(UploadFile 内部用到了 io.Writer 接口)
-var _ = io.Discard

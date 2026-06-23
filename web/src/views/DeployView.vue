@@ -54,7 +54,7 @@
 
         <el-form-item label="源 Agent">
           <el-select v-model="form.sourceAgentId" placeholder="选择源 Agent(项目所在节点)" style="width: 100%"
-            @change="onSourceAgentChange" :disabled="form.type === 'scale_out' && !needSource">
+            @change="onSourceAgentChange">
             <el-option v-for="a in agents" :key="a.id" :label="a.hostname + ' (' + a.id + ')'" :value="a.id" />
           </el-select>
         </el-form-item>
@@ -149,9 +149,6 @@ const form = reactive({
   configText: '',
 })
 
-// 扩容也需要源 Agent(从哪取 jar), 所以 needSource 恒为 true
-const needSource = computed(() => true)
-
 // 目标 Agent = 所有 Agent(排除源 Agent, 避免迁回自己)
 const targetAgents = computed(() =>
   agents.value.filter((a) => a.id !== form.sourceAgentId)
@@ -245,7 +242,7 @@ async function onCreate() {
       jarPath: form.jarPath,
       configText: form.configText,
       targetAgentId: form.targetAgentId,
-      sourceAgentId: form.type === 'migrate' ? form.sourceAgentId : form.sourceAgentId,
+      sourceAgentId: form.sourceAgentId,
     })
     ElMessage.success('部署任务已创建: ' + task.id)
     createVisible.value = false

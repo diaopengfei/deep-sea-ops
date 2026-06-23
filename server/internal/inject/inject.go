@@ -14,11 +14,11 @@ package inject
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/deepsea-ops/server/internal/crypto"
-	"github.com/deepsea-ops/server/internal/model"
 	"github.com/deepsea-ops/server/internal/sshclient"
 	"github.com/deepsea-ops/server/internal/store"
 )
@@ -113,7 +113,7 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	var steps []string
 
 	// 4. 上传二进制
-	remoteBinPath := "/opt/deepsea/" + filepathBase(binaryPath)
+	remoteBinPath := "/opt/deepsea/" + filepath.Base(binaryPath)
 	if err := client.UploadFile(binaryPath, remoteBinPath); err != nil {
 		result.Output = "上传二进制失败: " + err.Error()
 		return result
@@ -167,9 +167,8 @@ func genSystemdService(name, binPath string, req InjectRequest) string {
 	var execStart string
 	if req.Role == RoleRaft {
 		// deepsea-server -id node2 -raft-addr 0.0.0.0:7000 -join <leaderAddr>
-		raftAddr := req.RaftAddr
-		// 监听用 0.0.0.0, 但 AddVoter 用实际 IP
-		listenAddr := strings.Replace(raftAddr, "0.0.0.0", "0.0.0.0", 1)
+		// 监听用 0.0.0.0(绑所有网卡), AddVoter 用实际 IP
+		listenAddr := "0.0.0.0:" + portFromAddr(req.RaftAddr)
 		execStart = fmt.Sprintf("%s -id %s -raft-addr %s -join %s -http :8080 -grpc :9090",
 			binPath, req.NodeID, listenAddr, req.JoinAddr)
 	} else {
@@ -194,14 +193,11 @@ WantedBy=multi-user.target
 `, name, execStart)
 }
 
-// filepathBase 是 filepath.Base 的本地包装(避免额外 import)。
-func filepathBase(p string) string {
-	p = strings.TrimRight(p, "/")
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		return p[i+1:]
+// portFromAddr 从 "host:port" 中提取端口部分。
+func portFromAddr(addr string) string {
+	idx := strings.LastIndex(addr, ":")
+	if idx < 0 {
+		return "7000"
 	}
-	return p
+	return addr[idx+1:]
 }
-
-// 保留 model 引用(凭据类型校验用)
-var _ = model.AuthTypePassword

@@ -2,11 +2,13 @@ package agentclient
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // executeDeploy 在本节点部署一个 Java 项目。
@@ -126,19 +128,48 @@ func executeStopProject(params map[string]string) (string, error) {
 	return fmt.Sprintf("已停止 %d 个进程: %s", len(stopped), strings.Join(stopped, ", ")), nil
 }
 
-// killProcess 跨平台停止进程。
+// killProcess 跨平台停止进程, 发送 SIGTERM 后等待最多 5 秒退出。
 func killProcess(pid int) error {
 	if runtime.GOOS == "windows" {
 		return exec.Command("taskkill", "/F", "/PID", fmt.Sprintf("%d", pid)).Run()
 	}
-	return exec.Command("kill", "-15", fmt.Sprintf("%d", pid)).Run()
+	// 先发 SIGTERM, 优雅退出
+	if err := exec.Command("kill", "-15", fmt.Sprintf("%d", pid)).Run(); err != nil {
+		return err
+	}
+	// 等待最多 5 秒, 检查进程是否还在
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processExists(pid) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// 仍在运行, 强制 SIGKILL
+	return exec.Command("kill", "-9", fmt.Sprintf("%d", pid)).Run()
 }
 
-// copyFile 复制文件。
+// processExists 检查指定 PID 的进程是否还存在(Linux/macOS)。
+func processExists(pid int) bool {
+	if runtime.GOOS == "windows" {
+		return true // Windows 用 taskkill /F, 不需要等待
+	}
+	// kill -0 只检查进程是否存在, 不发信号
+	return exec.Command("kill", "-0", fmt.Sprintf("%d", pid)).Run() == nil
+}
+
+// copyFile 复制文件, 用 io.Copy 流式复制避免大 jar 文件 OOM。
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	srcF, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	defer srcF.Close()
+	dstF, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstF.Close()
+	_, err = io.Copy(dstF, srcF)
+	return err
 }
