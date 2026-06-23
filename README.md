@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.5.1-blue" alt="v0.5.1" />
+  <img src="https://img.shields.io/badge/version-v0.5.2-blue" alt="v0.5.2" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -337,6 +337,16 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
   - 多节点 Raft 集群一致性校验: `jwt_secret` 和 `master_key` 必须所有节点一致
   - 启动时安全配置校验与警告 (默认值/未设置/join 模式强警告)
   - `crypto` 和 `auth` 包改为显式初始化, 消除隐式环境变量依赖
+
+- **v0.5.2** 动态扩容 + ops 服务节点 + 自动扫描 ✅
+  
+  - 服务器列表直接触发 raft/agent 注入 (用 Server 表 SSH 密码, 不再依赖 credentialId)
+  - Raft 节点数量安全校验 (后端硬校验 3-7 范围 + 前端实时预览)
+  - 「Agent 节点」菜单改名为「ops 服务节点」, 整合 raft/agent 状态 + 项目扫描 + 配置管理
+  - 后台自动扫描调度器 (每 10 分钟扫描所有在线 Agent)
+  - 扫描后自动触发配置比对 (从 effectiveConfig 提取 Nacos 地址)
+  - 注入前校验目标服务器 OS (仅支持 Linux)
+  - 深度代码审查, 修复 raft 校验逻辑/ops-nodes 状态/前端预填等 5 处问题
 
 - **后续**
   

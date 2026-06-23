@@ -4,10 +4,14 @@
 //   - raft: 推送 deepsea-server 二进制, 启动后 Leader 调用 AddVoter 纳入集群
 //   - agent: 推送 deepsea-agent 二进制, 启动后自动连 Leader gRPC
 //
+// v0.5.2 起支持两种凭据来源:
+//   - CredentialID: 从 Raft 中读取 SSH 凭据(兼容旧 API)
+//   - 直接传 SSHConfig: 从 Server 表解密后直接传入(服务器列表触发注入)
+//
 // 流程:
-//  1. 从 Raft 读取 SSH 凭据(解密)
+//  1. 获取 SSH 连接信息(凭据 ID 或直接传入)
 //  2. SSH 连接目标服务器
-//  3. 上传二进制 + systemd 配置
+//  3. 上传二进制 + YAML 配置 + systemd 配置
 //  4. 远程启动 systemd 服务
 //  5. (Raft 节点) 调用 AddVoter 加入集群
 package inject
@@ -31,11 +35,25 @@ const (
 	RoleAgent Role = "agent" // Agent 工作节点
 )
 
+// SSHConfig 是直接传入的 SSH 连接信息(v0.5.2+, 从 Server 表解密后传入)。
+type SSHConfig struct {
+	Host       string // 目标服务器 IP
+	Port       int    // SSH 端口
+	Username   string // SSH 用户名
+	Password   string // SSH 密码(明文, 调用方负责解密)
+	PrivateKey string // SSH 私钥(明文, 调用方负责解密)
+}
+
 // InjectRequest 是一次注入请求的参数。
 type InjectRequest struct {
-	CredentialID string // SSH 凭据 ID(存在 Raft 里)
-	Role         Role   // raft / agent
-	NodeID       string // 节点 ID(如 node2 / agent-3)
+	// 凭据来源(二选一):
+	//   - CredentialID 非空时从 Raft 读取 SSH 凭据
+	//   - CredentialID 为空时用 SSHConfig
+	CredentialID string     // SSH 凭据 ID(存在 Raft 里, 兼容旧 API)
+	SSH          *SSHConfig // 直接传入 SSH 连接信息(v0.5.2+)
+
+	Role   Role   // raft / agent
+	NodeID string // 节点 ID(如 node2 / agent-3)
 	// Raft 节点参数
 	RaftAddr string // Raft 通信地址(如 192.168.1.11:7000), raft 角色必填
 	JoinAddr string // 已有集群 Leader 的 Raft 地址, raft 角色必填
@@ -67,21 +85,10 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	start := time.Now()
 	result := InjectResult{}
 
-	// 1. 读取并解密 SSH 凭据
-	cred, ok := inj.store.GetCredential(req.CredentialID)
-	if !ok {
-		result.Output = "凭据不存在: " + req.CredentialID
-		return result
-	}
-
-	password, err := crypto.Decrypt(cred.Password)
+	// 1. 获取 SSH 连接信息
+	sshCfg, err := inj.resolveSSHConfig(req)
 	if err != nil {
-		result.Output = "解密密码失败: " + err.Error()
-		return result
-	}
-	privateKey, err := crypto.Decrypt(cred.PrivateKey)
-	if err != nil {
-		result.Output = "解密私钥失败: " + err.Error()
+		result.Output = err.Error()
 		return result
 	}
 
@@ -96,14 +103,7 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	}
 
 	// 3. SSH 连接
-	sshCfg := sshclient.Config{
-		Host:       cred.IP,
-		Port:       cred.Port,
-		Username:   cred.Username,
-		Password:   password,
-		PrivateKey: privateKey,
-	}
-	client, err := sshclient.NewClient(sshCfg)
+	client, err := sshclient.NewClient(*sshCfg)
 	if err != nil {
 		result.Output = "SSH 连接失败: " + err.Error()
 		return result
@@ -150,7 +150,6 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	steps = append(steps, "已写入 systemd 配置 "+remoteServicePath)
 
 	// 6. 启动 systemd 服务
-	// systemctl daemon-reload && systemctl enable && systemctl restart
 	startCmd := fmt.Sprintf("systemctl daemon-reload && systemctl enable %s && systemctl restart %s", serviceName, serviceName)
 	if out, err := client.RunCommand(startCmd); err != nil {
 		result.Output = "启动服务失败: " + err.Error() + "\n" + out
@@ -173,6 +172,44 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	result.Output = strings.Join(steps, "\n")
 	result.Duration = time.Since(start)
 	return result
+}
+
+// resolveSSHConfig 从 CredentialID 或 SSHConfig 获取 SSH 连接信息。
+func (inj *Injector) resolveSSHConfig(req InjectRequest) (*sshclient.Config, error) {
+	// v0.5.2+: 直接传入 SSH 配置(从 Server 表解密后传入)
+	if req.SSH != nil {
+		return &sshclient.Config{
+			Host:       req.SSH.Host,
+			Port:       req.SSH.Port,
+			Username:   req.SSH.Username,
+			Password:   req.SSH.Password,
+			PrivateKey: req.SSH.PrivateKey,
+		}, nil
+	}
+
+	// 兼容旧 API: 从 Raft 读取 SSH 凭据
+	if req.CredentialID == "" {
+		return nil, fmt.Errorf("必须提供 CredentialID 或 SSH 配置")
+	}
+	cred, ok := inj.store.GetCredential(req.CredentialID)
+	if !ok {
+		return nil, fmt.Errorf("凭据不存在: %s", req.CredentialID)
+	}
+	password, err := crypto.Decrypt(cred.Password)
+	if err != nil {
+		return nil, fmt.Errorf("解密密码失败: %w", err)
+	}
+	privateKey, err := crypto.Decrypt(cred.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("解密私钥失败: %w", err)
+	}
+	return &sshclient.Config{
+		Host:       cred.IP,
+		Port:       cred.Port,
+		Username:   cred.Username,
+		Password:   password,
+		PrivateKey: privateKey,
+	}, nil
 }
 
 // genConfigContent 生成远程节点的 YAML 配置文件内容。

@@ -183,6 +183,11 @@ func (s *Store) ListServers() []model.Server {
 	return s.fsm.List()
 }
 
+// GetServer 按 ID 查单个服务器。
+func (s *Store) GetServer(id int64) (*model.Server, bool) {
+	return s.fsm.GetServer(id)
+}
+
 // --- 用户相关 ---
 
 // AddUser 提交"新增用户"命令到 Raft。

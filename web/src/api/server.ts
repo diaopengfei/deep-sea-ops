@@ -113,3 +113,75 @@ export async function readAgentConfig(agentId: string, path: string): Promise<Re
   const res = await http.post<ReadConfigResult>(`/agents/${agentId}/read-config`, { path })
   return res.data
 }
+
+// --- v0.5.2: 服务器列表触发注入 ---
+
+export interface InjectFromServerRequest {
+  role: 'raft' | 'agent'
+  nodeId: string
+  raftAddr?: string       // raft 角色必填
+  joinAddr?: string       // raft 角色必填
+  leaderGrpcAddr?: string // agent 角色必填
+  binaryPath?: string     // 可选, 留空用默认值
+}
+
+export async function injectFromServer(serverId: number, req: InjectFromServerRequest): Promise<{ status: string; nodeId: string; role: string; msg: string }> {
+  const res = await http.post(`/servers/${serverId}/inject`, req)
+  return res.data
+}
+
+// --- v0.5.2: ops 服务节点合并视图 ---
+
+export interface OpsNode {
+  type: 'raft' | 'agent'
+  id: string
+  address?: string
+  hostname?: string
+  ip?: string
+  state: string          // raft: Leader/Follower/Candidate; agent: online
+  suffrage?: string      // raft: Voter/Nonvoter
+  lastSeen?: number      // unix 秒
+  isLeader?: boolean
+  isSelf?: boolean
+}
+
+export async function listOpsNodes(): Promise<OpsNode[]> {
+  const res = await http.get<OpsNode[]>('/ops-nodes')
+  return res.data
+}
+
+// --- 集群信息(供注入对话框预览 Voter 数量) ---
+
+export interface ClusterInfo {
+  id: string
+  state: string
+  leader: string
+  term: string
+  servers: Array<{ id: string; address: string; suffrage: string }>
+}
+
+export async function getClusterInfo(): Promise<ClusterInfo> {
+  const res = await http.get<ClusterInfo>('/cluster/info')
+  return res.data
+}
+
+// --- 项目记录(持久化的扫描结果) ---
+
+export interface ProjectRecord {
+  id: string
+  agentId: string
+  path: string
+  type: string
+  name: string
+  configFiles: string[]
+  jarPath: string
+  jarEntry: string
+  running: boolean
+  pid: number
+  scannedAt: string
+}
+
+export async function listProjects(agentId?: string): Promise<ProjectRecord[]> {
+  const res = await http.get<ProjectRecord[]>('/projects', { params: { agentId } })
+  return res.data
+}

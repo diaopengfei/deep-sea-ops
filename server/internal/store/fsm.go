@@ -158,6 +158,27 @@ func (f *FSM) List() []model.Server {
 	return out
 }
 
+// GetServer 按 ID 查单个服务器。
+func (f *FSM) GetServer(id int64) (*model.Server, bool) {
+	var srv *model.Server
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(serversBucket)
+		val := b.Get([]byte(strconv.FormatInt(id, 10)))
+		if val == nil {
+			return nil
+		}
+		srv = &model.Server{}
+		return json.Unmarshal(val, srv)
+	}); err != nil {
+		log.Printf("FSM GetServer 读取失败: %v", err)
+		return nil, false
+	}
+	if srv == nil {
+		return nil, false
+	}
+	return srv, true
+}
+
 // --- 用户 ---
 
 func (f *FSM) applyAddUser(tx *bbolt.Tx, u model.User) error {

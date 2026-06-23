@@ -12,14 +12,8 @@
         <el-menu-item index="servers" @click="activeMenu = 'servers'">
           <el-icon><Coin /></el-icon><span>服务器管理</span>
         </el-menu-item>
-        <el-menu-item index="agents" @click="activeMenu = 'agents'">
-          <el-icon><Connection /></el-icon><span>Agent 节点</span>
-        </el-menu-item>
-        <el-menu-item index="projects" @click="activeMenu = 'projects'">
-          <el-icon><FolderOpened /></el-icon><span>项目扫描</span>
-        </el-menu-item>
-        <el-menu-item index="config" @click="activeMenu = 'config'">
-          <el-icon><Setting /></el-icon><span>配置管理</span>
+        <el-menu-item index="ops-nodes" @click="activeMenu = 'ops-nodes'">
+          <el-icon><Connection /></el-icon><span>ops 服务节点</span>
         </el-menu-item>
         <el-menu-item index="deploy" @click="activeMenu = 'deploy'">
           <el-icon><Promotion /></el-icon><span>扩容迁移</span>
@@ -46,9 +40,7 @@
       </el-header>
       <el-main class="main">
         <ServerListView v-if="activeMenu === 'servers'" />
-        <AgentListView v-else-if="activeMenu === 'agents'" />
-        <ProjectScanView v-else-if="activeMenu === 'projects'" />
-        <ConfigDiffView v-else-if="activeMenu === 'config'" />
+        <OpsNodeListView v-else-if="activeMenu === 'ops-nodes'" />
         <DeployView v-else-if="activeMenu === 'deploy'" />
         <CredentialsView v-else-if="activeMenu === 'credentials'" />
         <ClusterTopologyView v-else-if="activeMenu === 'cluster'" />
@@ -59,12 +51,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Monitor, Coin, Connection, Share, Setting, SwitchButton, FolderOpened, Promotion, Key } from '@element-plus/icons-vue'
+import { Monitor, Coin, Connection, Share, SwitchButton, Promotion, Key } from '@element-plus/icons-vue'
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
-import AgentListView from './views/AgentListView.vue'
-import ProjectScanView from './views/ProjectScanView.vue'
-import ConfigDiffView from './views/ConfigDiffView.vue'
+import OpsNodeListView from './views/OpsNodeListView.vue'
 import DeployView from './views/DeployView.vue'
 import CredentialsView from './views/CredentialsView.vue'
 import ClusterTopologyView from './views/ClusterTopologyView.vue'
@@ -77,9 +67,7 @@ const activeMenu = ref('servers')
 const pageTitle = computed(() => {
   const map: Record<string, string> = {
     servers: '服务器管理',
-    agents: 'Agent 节点',
-    projects: '项目扫描',
-    config: '配置管理',
+    'ops-nodes': 'ops 服务节点',
     deploy: '扩容迁移',
     credentials: 'SSH 凭据',
     cluster: '集群拓扑',

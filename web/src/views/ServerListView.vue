@@ -69,9 +69,10 @@
             {{ formatTime(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="onTestRow(row)">测试连接</el-button>
+            <el-button link type="success" size="small" @click="openInjectDialog(row)">注入节点</el-button>
             <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -109,6 +110,59 @@
         <el-button type="primary" :loading="submitting" @click="onAdd">确认新增</el-button>
       </template>
     </el-dialog>
+
+    <!-- 注入节点弹窗 (v0.5.2) -->
+    <el-dialog v-model="injectDialogVisible" title="注入节点" width="560px" @open="onInjectDialogOpen">
+      <el-form :model="injectForm" label-width="120px">
+        <el-form-item label="目标服务器">
+          <el-input :model-value="`${injectTarget.name} (${injectTarget.ip})`" disabled />
+        </el-form-item>
+        <el-form-item label="节点角色" required>
+          <el-radio-group v-model="injectForm.role">
+            <el-radio value="agent">Agent</el-radio>
+            <el-radio value="raft">Raft</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="节点 ID" required>
+          <el-input v-model="injectForm.nodeId" placeholder="如 node-3 / agent-7" />
+        </el-form-item>
+
+        <!-- raft 角色参数 -->
+        <template v-if="injectForm.role === 'raft'">
+          <el-form-item label="Raft 通信地址" required>
+            <el-input v-model="injectForm.raftAddr" placeholder="如 192.168.1.11:7000" />
+          </el-form-item>
+          <el-form-item label="Join 地址">
+            <el-input v-model="injectForm.joinAddr" placeholder="Leader 的 Raft 地址, 留空表示首个节点" />
+            <div class="form-tip">预填当前集群 Leader 的 Raft 地址: {{ injectClusterInfo?.leader || '尚未获取' }}</div>
+          </el-form-item>
+          <el-form-item label="集群预览">
+            <div class="cluster-preview">
+              <div>当前 Voter 数: <b>{{ currentVoterCount }}</b></div>
+              <div>加入后 Voter 数: <b>{{ currentVoterCount + 1 }}</b></div>
+              <div v-if="raftJoinWarning" class="warn-text">{{ raftJoinWarning }}</div>
+              <div v-else class="ok-text">加入后集群规模合法 (奇数且 3~7)</div>
+            </div>
+          </el-form-item>
+        </template>
+
+        <!-- agent 角色参数 -->
+        <template v-if="injectForm.role === 'agent'">
+          <el-form-item label="Leader gRPC 地址">
+            <el-input v-model="injectForm.leaderGrpcAddr" placeholder="如 192.168.1.10:7001" />
+            <div class="form-tip">预填由当前集群 Leader 推导的 gRPC 地址: {{ derivedLeaderGrpc || '尚未获取' }}</div>
+          </el-form-item>
+        </template>
+
+        <el-form-item label="二进制路径">
+          <el-input v-model="injectForm.binaryPath" placeholder="可选, 留空用默认值" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="injectDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="injecting" @click="onInject">确认注入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -121,8 +175,12 @@ import {
   addServer,
   deleteServer,
   testConnection,
+  injectFromServer,
+  getClusterInfo,
   type ListServersParams,
   type AddServerRequest,
+  type InjectFromServerRequest,
+  type ClusterInfo,
 } from '../api/server'
 import type { Server } from '../api/types'
 
@@ -143,6 +201,46 @@ const form = reactive<AddServerRequest>({
   os: 'linux',
   username: '',
   password: '',
+})
+
+// --- 注入节点 (v0.5.2) ---
+const injectDialogVisible = ref(false)
+const injecting = ref(false)
+const injectTarget = ref<Server>({} as Server)
+const injectClusterInfo = ref<ClusterInfo | null>(null)
+const injectForm = reactive<InjectFromServerRequest>({
+  role: 'agent',
+  nodeId: '',
+  raftAddr: '',
+  joinAddr: '',
+  leaderGrpcAddr: '',
+  binaryPath: '',
+})
+
+// 当前集群 Voter 数量
+const currentVoterCount = computed(() => {
+  if (!injectClusterInfo.value) return 0
+  return injectClusterInfo.value.servers.filter((s) => s.suffrage === 'Voter').length
+})
+
+// raft 加入后规模校验: 必须奇数且 3~7
+const raftJoinWarning = computed(() => {
+  const after = currentVoterCount.value + 1
+  if (after < 3) return `加入后 Voter 数为 ${after}, 少于 3, 无法构成可用集群`
+  if (after > 7) return `加入后 Voter 数为 ${after}, 超过 7, 集群过大可能影响性能`
+  if (after % 2 === 0) return `加入后 Voter 数为 ${after}, 不是奇数, 选举可能脑裂`
+  return ''
+})
+
+// 由 Leader Raft 地址推导 gRPC 地址 (host 不变, 端口默认 9090)
+// 注意: raft 端口和 gRPC 端口没有固定关系, 这里用默认 9090, 用户可修改
+const derivedLeaderGrpc = computed(() => {
+  const leader = injectClusterInfo.value?.leader
+  if (!leader) return ''
+  const idx = leader.lastIndexOf(':')
+  if (idx <= 0) return leader
+  const host = leader.slice(0, idx)
+  return `${host}:9090`
 })
 
 // 统计: 从数据派生
@@ -292,6 +390,67 @@ async function onDelete(row: Server) {
   }
 }
 
+// 打开注入对话框, 重置表单
+function openInjectDialog(row: Server) {
+  injectTarget.value = row
+  injectForm.role = 'agent'
+  injectForm.nodeId = ''
+  injectForm.raftAddr = ''
+  injectForm.joinAddr = ''
+  injectForm.leaderGrpcAddr = ''
+  injectForm.binaryPath = ''
+  injectClusterInfo.value = null
+  injectDialogVisible.value = true
+}
+
+// 对话框打开后拉取集群信息, 预填 raft join 地址和 agent gRPC 地址
+async function onInjectDialogOpen() {
+  try {
+    const info = await getClusterInfo()
+    injectClusterInfo.value = info
+    // raft: 预填 Leader 的 Raft 地址作为 joinAddr
+    if (info.leader) {
+      injectForm.joinAddr = info.leader
+    }
+    // agent: 预填由 Leader 推导的 gRPC 地址
+    const grpc = derivedLeaderGrpc.value
+    if (grpc) {
+      injectForm.leaderGrpcAddr = grpc
+    }
+  } catch (e: any) {
+    // 集群信息获取失败不阻塞注入, 仅提示
+    ElMessage.warning('获取集群信息失败: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+// 提交注入任务
+async function onInject() {
+  if (!injectForm.nodeId) {
+    ElMessage.warning('节点 ID 不能为空')
+    return
+  }
+  if (injectForm.role === 'raft') {
+    if (!injectForm.raftAddr) {
+      ElMessage.warning('raft 角色必须填写 Raft 通信地址')
+      return
+    }
+    // joinAddr 可留空(首个节点), 但有 Leader 时建议填写
+  } else {
+    // agent 角色: leaderGrpcAddr 留空时后端用默认值, 不强制
+  }
+
+  injecting.value = true
+  try {
+    await injectFromServer(injectTarget.value.id, { ...injectForm })
+    ElMessage.success('注入任务已提交')
+    injectDialogVisible.value = false
+  } catch (e: any) {
+    ElMessage.error('注入失败: ' + (e.response?.data?.error || e.message))
+  } finally {
+    injecting.value = false
+  }
+}
+
 function formatTime(ts: number): string {
   if (!ts) return '-'
   return new Date(ts).toLocaleString('zh-CN')
@@ -382,4 +541,35 @@ onMounted(loadServers)
 
 .dot-online { background: #67c23a; }
 .dot-offline { background: #f56c6c; }
+
+/* 注入对话框辅助样式 */
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+  margin-top: 4px;
+}
+
+.cluster-preview {
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.9;
+}
+
+.cluster-preview b {
+  color: #303133;
+}
+
+.warn-text {
+  color: #f56c6c;
+  font-weight: 600;
+}
+
+.ok-text {
+  color: #67c23a;
+}
 </style>

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/deepsea-ops/server/internal/crypto"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	pb "github.com/deepsea-ops/server/internal/proto/agent"
+	"github.com/deepsea-ops/server/internal/scanner"
 	"github.com/deepsea-ops/server/internal/store"
 )
 
@@ -78,6 +80,11 @@ func main() {
 			log.Fatalf("gRPC 服务退出: %v", err)
 		}
 	}()
+
+	// v0.5.2: 启动后台自动扫描调度器(每 10 分钟扫描所有在线 Agent)
+	scanScheduler := scanner.NewScheduler(storeInstance, grpcSrv, 10*time.Minute)
+	scanScheduler.Start()
+	defer scanScheduler.Stop()
 
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
 	handler := api.New(storeInstance, grpcSrv, authSvc)
