@@ -17,12 +17,12 @@ server/raft-data/
 node_modules/
 web/dist/
 
-# 文档(本地维护, 不纳入版本库)
-docs/
-
 # 编辑器配置
 .idea/
 .vscode/
+
+# 开发环境运行时 PID/日志 (start.sh / start.ps1 生成)
+.run/
 
 # 操作系统杂物
 .DS_Store

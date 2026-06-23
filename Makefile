@@ -36,7 +36,11 @@ web:
 
 ## dev: 启动后端和前端开发服务(需两个终端, 或各自后台)
 dev:
-	@echo "在两个终端分别运行:"
+	@echo "方式一(推荐): 用启动脚本一键启动"
+	@echo "  Linux/macOS:  ./scripts/start.sh"
+	@echo "  Windows:      .\\scripts\\start.ps1"
+	@echo ""
+	@echo "方式二: 手动两个终端"
 	@echo "  cd server && $(GO) run ./cmd/server"
 	@echo "  cd web && npm run dev"
 
