@@ -47,8 +47,8 @@ func ScanProjects(dirs []string, maxDepth int) ScanResult {
 	}
 	result := ScanResult{Projects: []ProjectInfo{}}
 
-	// 读 hosts 文件
-	hosts, err := os.ReadFile("/etc/hosts")
+	// 读 hosts 文件(通过平台抽象层, 自动适配 Linux/Windows 路径)
+	hosts, err := readHostsViaPlatform()
 	if err != nil {
 		result.HostsErr = err.Error()
 	} else {
@@ -351,4 +351,14 @@ func findJarInDir(dir string) string {
 		}
 	}
 	return ""
+}
+
+// readHostsViaPlatform 通过平台抽象层读取 hosts 文件。
+// 未初始化时回退到 /etc/hosts(保持向后兼容)。
+func readHostsViaPlatform() ([]byte, error) {
+	if globalOps != nil {
+		return globalOps.File.ReadHosts()
+	}
+	// 兜底: 未初始化时直接读 /etc/hosts(不应发生, Agent 启动时已 InitPlatform)
+	return os.ReadFile("/etc/hosts")
 }

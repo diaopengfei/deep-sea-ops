@@ -1,19 +1,13 @@
-// Package inject 实现 v0.4 自动注入: SSH 推送二进制 + 配置, 远程拉起 systemd。
+// Package inject 实现 v0.4 自动注入: SSH 推送二进制 + 配置, 远程拉起服务。
 //
 // 两种角色:
 //   - raft: 推送 deepsea-server 二进制, 启动后 Leader 调用 AddVoter 纳入集群
 //   - agent: 推送 deepsea-agent 二进制, 启动后自动连 Leader gRPC
 //
-// v0.5.2 起支持两种凭据来源:
-//   - CredentialID: 从 Raft 中读取 SSH 凭据(兼容旧 API)
-//   - 直接传 SSHConfig: 从 Server 表解密后直接传入(服务器列表触发注入)
-//
-// 流程:
-//  1. 获取 SSH 连接信息(凭据 ID 或直接传入)
-//  2. SSH 连接目标服务器
-//  3. 上传二进制 + YAML 配置 + systemd 配置
-//  4. 远程启动 systemd 服务
-//  5. (Raft 节点) 调用 AddVoter 加入集群
+// v0.6.0 起使用 platform 抽象层:
+//   - SSHExecutor 包装 sshclient.Client, 实现 Executor 接口
+//   - CommandBuilder 按目标平台生成命令(systemd/SysVInit/Windows Service)
+//   - ServiceOps 管理服务安装/启动/停止
 package inject
 
 import (
@@ -23,6 +17,7 @@ import (
 	"time"
 
 	"github.com/deepsea-ops/server/internal/crypto"
+	"github.com/deepsea-ops/server/internal/platform"
 	"github.com/deepsea-ops/server/internal/sshclient"
 	"github.com/deepsea-ops/server/internal/store"
 )
@@ -115,54 +110,65 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	}
 	defer client.Close()
 
+	// 4. 检测目标服务器平台(通过 SSH 执行命令)
+	targetPlatform, err := detectRemotePlatform(client)
+	if err != nil {
+		// 检测失败, 兜底用 Linux systemd
+		targetPlatform = platform.PlatformInfo{OS: "linux", InitSystem: "systemd"}
+	}
+
+	// 5. 创建 SSHExecutor + Builder
+	sshExec := platform.NewSSHExecutor(client)
+	builder := platform.NewCommandBuilder(targetPlatform)
+
 	var steps []string
 
-	// 4. 上传二进制
-	remoteBinPath := "/opt/deepsea/" + binBase
+	// 6. 上传二进制
+	remoteBinDir := builder.BinaryDeployDir()
+	remoteBinPath := filepath.Join(remoteBinDir, binBase)
+	// 创建目录
+	if _, _, _, err := sshExec.Run(builder.CreateDir(remoteBinDir)); err != nil {
+		result.Output = "创建远程目录失败: " + err.Error()
+		return result
+	}
 	if err := client.UploadFile(binaryPath, remoteBinPath); err != nil {
 		result.Output = "上传二进制失败: " + err.Error()
 		return result
 	}
 	steps = append(steps, "已上传二进制到 "+remoteBinPath)
 
-	// chmod +x (路径已校验安全, 用 shellQuote 二次防护)
-	if _, err := client.RunCommand("chmod +x " + shellQuote(remoteBinPath)); err != nil {
-		result.Output = "chmod 失败: " + err.Error()
-		return result
+	// chmod +x (Linux/macOS, Windows 跳过)
+	if targetPlatform.OS != "windows" {
+		if _, _, _, err := sshExec.Run(builder.Chmod(remoteBinPath, "+x")); err != nil {
+			result.Output = "chmod 失败: " + err.Error()
+			return result
+		}
 	}
 
-	// 4.5 上传 YAML 配置文件 (v0.5: 改为配置文件启动)
-	remoteCfgPath := "/opt/deepsea/config/" + string(req.Role) + ".yaml"
-	cfgContent := genConfigContent(req)
-	if _, err := client.RunCommand("mkdir -p /opt/deepsea/config"); err != nil {
+	// 7. 上传 YAML 配置文件
+	remoteCfgDir := builder.ConfigDeployDir()
+	if _, _, _, err := sshExec.Run(builder.CreateDir(remoteCfgDir)); err != nil {
 		result.Output = "创建配置目录失败: " + err.Error()
 		return result
 	}
+	remoteCfgPath := filepath.Join(remoteCfgDir, string(req.Role)+".yaml")
+	cfgContent := genConfigContent(req)
 	if err := client.UploadContent([]byte(cfgContent), remoteCfgPath); err != nil {
 		result.Output = "上传配置文件失败: " + err.Error()
 		return result
 	}
 	steps = append(steps, "已写入配置文件 "+remoteCfgPath)
 
-	// 5. 生成 systemd 配置并上传
+	// 8. 安装并启动服务
 	serviceName := "deepsea-" + string(req.Role)
-	serviceContent := genSystemdService(serviceName, remoteBinPath, remoteCfgPath)
-	remoteServicePath := "/etc/systemd/system/" + serviceName + ".service"
-	if err := client.UploadContent([]byte(serviceContent), remoteServicePath); err != nil {
-		result.Output = "上传 systemd 配置失败: " + err.Error()
+	serviceSteps, err := installAndStartService(sshExec, builder, client, serviceName, remoteBinPath, remoteCfgPath, targetPlatform)
+	if err != nil {
+		result.Output = err.Error() + "\n" + strings.Join(serviceSteps, "\n")
 		return result
 	}
-	steps = append(steps, "已写入 systemd 配置 "+remoteServicePath)
+	steps = append(steps, serviceSteps...)
 
-	// 6. 启动 systemd 服务 (serviceName 由 role 派生, role 已校验为 raft/agent, 安全)
-	startCmd := fmt.Sprintf("systemctl daemon-reload && systemctl enable %s && systemctl restart %s", serviceName, serviceName)
-	if out, err := client.RunCommandTimeout(startCmd, 120*time.Second); err != nil {
-		result.Output = "启动服务失败: " + err.Error() + "\n" + out
-		return result
-	}
-	steps = append(steps, "已启动 systemd 服务 "+serviceName)
-
-	// 7. Raft 节点: 调用 AddVoter 加入集群
+	// 9. Raft 节点: 调用 AddVoter 加入集群
 	if req.Role == RoleRaft && req.JoinAddr != "" {
 		// 等待新节点启动
 		time.Sleep(2 * time.Second)
@@ -177,6 +183,104 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	result.Output = strings.Join(steps, "\n")
 	result.Duration = time.Since(start)
 	return result
+}
+
+// detectRemotePlatform 通过 SSH 检测目标服务器的平台信息。
+func detectRemotePlatform(client *sshclient.Client) (platform.PlatformInfo, error) {
+	// 检测 OS: uname -s (Linux 返回 Linux, Windows 无此命令)
+	out, err := client.RunCommand("uname -s 2>/dev/null || echo windows")
+	if err != nil {
+		return platform.PlatformInfo{}, err
+	}
+	out = strings.TrimSpace(strings.ToLower(out))
+	if out == "windows" || out == "" {
+		return platform.PlatformInfo{OS: "windows", InitSystem: "windows-service"}, nil
+	}
+	// Linux: 检测 init 系统
+	p := platform.PlatformInfo{OS: "linux"}
+	// 检测 systemd
+	if _, err := client.RunCommand("test -d /run/systemd/system"); err == nil {
+		p.InitSystem = "systemd"
+	} else if _, err := client.RunCommand("test -d /etc/init.d"); err == nil {
+		p.InitSystem = "sysvinit"
+	} else {
+		p.InitSystem = "systemd" // 兜底
+	}
+	return p, nil
+}
+
+// installAndStartService 根据平台安装并启动服务。
+// 参数 exec 用 platform.Executor 接口, 不绑定具体 SSHExecutor 实现。
+func installAndStartService(exec platform.Executor, builder platform.CommandBuilder, client *sshclient.Client, serviceName, binPath, cfgPath string, p platform.PlatformInfo) ([]string, error) {
+	var steps []string
+
+	switch p.OS {
+	case "linux":
+		if p.InitSystem == "systemd" {
+			// systemd: 写 service 文件 + daemon-reload + enable + restart
+			serviceContent := genSystemdService(serviceName, binPath, cfgPath)
+			servicePath := builder.ServiceFilePath(serviceName)
+			if err := client.UploadContent([]byte(serviceContent), servicePath); err != nil {
+				return steps, fmt.Errorf("上传 systemd 配置失败: %w", err)
+			}
+			steps = append(steps, "已写入 systemd 配置 "+servicePath)
+			// daemon-reload
+			if _, _, _, err := exec.Run(builder.InstallService(serviceName, binPath, cfgPath)); err != nil {
+				return steps, fmt.Errorf("daemon-reload 失败: %w", err)
+			}
+			// enable + start
+			if _, _, _, err := exec.Run(builder.EnableService(serviceName)); err != nil {
+				return steps, fmt.Errorf("enable 失败: %w", err)
+			}
+			startCmd := builder.StartService(serviceName)
+			startCmd.Timeout = 120 * time.Second
+			if _, _, _, err := exec.Run(startCmd); err != nil {
+				return steps, fmt.Errorf("启动服务失败: %w", err)
+			}
+			steps = append(steps, "已启动 systemd 服务 "+serviceName)
+		} else {
+			// SysVInit: 写 init.d 脚本 + chmod +x + service start
+			scriptContent := genSysVInitScript(serviceName, binPath, cfgPath)
+			scriptPath := builder.ServiceFilePath(serviceName)
+			if err := client.UploadContent([]byte(scriptContent), scriptPath); err != nil {
+				return steps, fmt.Errorf("上传 init.d 脚本失败: %w", err)
+			}
+			steps = append(steps, "已写入 init.d 脚本 "+scriptPath)
+			// chmod +x
+			if _, _, _, err := exec.Run(builder.Chmod(scriptPath, "+x")); err != nil {
+				return steps, fmt.Errorf("chmod 失败: %w", err)
+			}
+			// service start
+			startCmd := builder.StartService(serviceName)
+			startCmd.Timeout = 120 * time.Second
+			if _, _, _, err := exec.Run(startCmd); err != nil {
+				return steps, fmt.Errorf("启动服务失败: %w", err)
+			}
+			steps = append(steps, "已启动 init.d 服务 "+serviceName)
+		}
+	case "windows":
+		// Windows: sc create + sc config + sc start
+		installCmd := builder.InstallService(serviceName, binPath, cfgPath)
+		if _, _, _, err := exec.Run(installCmd); err != nil {
+			return steps, fmt.Errorf("sc create 失败: %w", err)
+		}
+		steps = append(steps, "已创建 Windows 服务 "+serviceName)
+		// sc config start= auto
+		if _, _, _, err := exec.Run(builder.EnableService(serviceName)); err != nil {
+			return steps, fmt.Errorf("sc config 失败: %w", err)
+		}
+		// sc start
+		startCmd := builder.StartService(serviceName)
+		startCmd.Timeout = 120 * time.Second
+		if _, _, _, err := exec.Run(startCmd); err != nil {
+			return steps, fmt.Errorf("启动服务失败: %w", err)
+		}
+		steps = append(steps, "已启动 Windows 服务 "+serviceName)
+	default:
+		return steps, fmt.Errorf("不支持的平台: %s", p.OS)
+	}
+
+	return steps, nil
 }
 
 // resolveSSHConfig 从 CredentialID 或 SSHConfig 获取 SSH 连接信息。
@@ -261,6 +365,49 @@ WantedBy=multi-user.target
 `, name, execStart)
 }
 
+// genSysVInitScript 生成 SysVInit /etc/init.d/ 脚本内容。
+func genSysVInitScript(name, binPath, cfgPath string) string {
+	return fmt.Sprintf(`#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          %s
+# Required-Start:    $network
+# Required-Stop:     $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Description:       DeepSea Ops %s
+### END INIT INFO
+
+DAEMON=%s
+CONFIG=%s
+PIDFILE=/var/run/%s.pid
+
+case "$1" in
+  start)
+    start-stop-daemon --start --background --make-pidfile --pidfile $PIDFILE --exec $DAEMON -- -config $CONFIG
+    ;;
+  stop)
+    start-stop-daemon --stop --pidfile $PIDFILE
+    ;;
+  restart)
+    $0 stop
+    $0 start
+    ;;
+  status)
+    if [ -f $PIDFILE ]; then
+      echo "Running"
+    else
+      echo "Stopped"
+    fi
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac
+exit 0
+`, name, name, binPath, cfgPath, name)
+}
+
 // portFromAddr 从 "host:port" 中提取端口部分。
 func portFromAddr(addr string) string {
 	idx := strings.LastIndex(addr, ":")
@@ -286,9 +433,4 @@ func validateBinName(name string) error {
 		}
 	}
 	return nil
-}
-
-// shellQuote 对路径做 shell 单引号转义, 防止注入。
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

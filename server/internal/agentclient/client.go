@@ -36,6 +36,8 @@ func New(agentID, serverAddr string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 初始化平台抽象层(检测 OS/发行版/init 系统, 创建 Ops)
+	InitPlatform()
 	return &Client{
 		agentID:  agentID,
 		hostname: hostname,
@@ -172,7 +174,8 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		// 扫描节点上的 Java/Python 项目, 并补充进程状态和生效配置
 		dirsParam := cmd.Params["scanDirs"]
 		if dirsParam == "" {
-			dirsParam = "/home,/data"
+			// 通过平台抽象层获取默认扫描目录(自动适配 Linux/Windows)
+			dirsParam = defaultScanDirsParam()
 		}
 		scanDirs := strings.Split(dirsParam, ",")
 		scanResult := ScanProjects(scanDirs, 5)
@@ -238,4 +241,17 @@ func localIP() string {
 		}
 	}
 	return "127.0.0.1"
+}
+
+// defaultScanDirsParam 返回默认扫描目录参数(逗号分隔)。
+// 通过平台抽象层获取, 自动适配 Linux/Windows; 未初始化时回退到 /home,/data。
+func defaultScanDirsParam() string {
+	if globalOps != nil {
+		dirs := globalOps.Scan.DefaultDirs()
+		if len(dirs) > 0 {
+			return strings.Join(dirs, ",")
+		}
+	}
+	// 兜底: 未初始化时用 Linux 默认值(不应发生, Agent 启动时已 InitPlatform)
+	return "/home,/data"
 }
