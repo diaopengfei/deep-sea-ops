@@ -3,6 +3,10 @@
 // v0.5.2: 每 10 分钟对所有在线 Agent 下发 SCAN_PROJECTS 指令,
 // 扫描完成后自动触发配置比对(对 Spring 项目),
 // 结果持久化到 Raft 供前端查询。
+//
+// v0.5.3: 增加 per-agent 互斥锁, 防止后台扫描与手动扫描并发竞态;
+// 配置比对结果持久化到 ProjectRecord.ConfigDiffJSON;
+// 从 effectiveConfig 提取 Nacos 认证参数(username/password/accessToken)。
 package scanner
 
 import (
@@ -25,6 +29,9 @@ type Scheduler struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	// per-agent 互斥锁, 防止后台扫描与手动扫描并发执行导致数据覆盖
+	agentMu   sync.Map // map[string]*sync.Mutex
 }
 
 // NewScheduler 创建扫描调度器。interval 为扫描周期, 建议 10 分钟。
@@ -48,6 +55,13 @@ func (sc *Scheduler) Stop() {
 	sc.stopOnce.Do(func() {
 		close(sc.stopCh)
 	})
+}
+
+// getAgentMu 获取(或创建)指定 Agent 的互斥锁。
+// 同一 Agent 的扫描串行执行, 不同 Agent 并行, 兼顾安全与效率。
+func (sc *Scheduler) getAgentMu(agentID string) *sync.Mutex {
+	v, _ := sc.agentMu.LoadOrStore(agentID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // run 是调度器主循环。
@@ -91,7 +105,15 @@ func (sc *Scheduler) scanAll() {
 }
 
 // scanAgent 对单个 Agent 执行扫描 + 配置比对。
+// v0.5.3: 用 per-agent 互斥锁防止与手动扫描并发。
 func (sc *Scheduler) scanAgent(agentID string) {
+	mu := sc.getAgentMu(agentID)
+	if !mu.TryLock() {
+		log.Printf("[扫描调度器] Agent %s 正在扫描中(手动或其他任务持有锁), 跳过本次", agentID)
+		return
+	}
+	defer mu.Unlock()
+
 	// 1. 下发扫描指令
 	scanResultJSON, err := sc.grpcSrv.ScanProjects(agentID, "", 60*time.Second)
 	if err != nil {
@@ -144,7 +166,8 @@ func (sc *Scheduler) scanAgent(agentID string) {
 }
 
 // autoConfigDiff 对单个项目自动执行配置比对。
-// Nacos 地址从扫描结果的 effectiveConfig 中提取。
+// v0.5.3: 从 effectiveConfig 提取 Nacos 认证参数(username/password/accessToken),
+// 比对结果持久化到 ProjectRecord.ConfigDiffJSON 供前端查询。
 func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
 	// 从 effectiveConfig 提取 Nacos 地址
 	nacosAddr := extractNacosAddr(p.EffectiveConfig)
@@ -159,13 +182,18 @@ func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
 		localPath = p.ConfigFiles[0]
 	}
 
+	// v0.5.3: 提取 Nacos 认证参数(从 effectiveConfig)
 	params := map[string]string{
-		"nacosAddr":   nacosAddr,
-		"nacosDataId": extractNacosConfig(p.EffectiveConfig, "spring.application.name") + ".yml",
-		"nacosGroup":  extractNacosConfig(p.EffectiveConfig, "spring.cloud.nacos.config.group"),
-		"localPath":   localPath,
-		"jarPath":     p.JarPath,
-		"jarEntry":    p.JarEntry,
+		"nacosAddr":        nacosAddr,
+		"nacosDataId":      extractNacosConfig(p.EffectiveConfig, "spring.application.name") + ".yml",
+		"nacosGroup":       extractNacosConfig(p.EffectiveConfig, "spring.cloud.nacos.config.group"),
+		"nacosNamespace":   extractNacosConfig(p.EffectiveConfig, "spring.cloud.nacos.config.namespace"),
+		"nacosUsername":    extractNacosConfig(p.EffectiveConfig, "spring.cloud.nacos.username"),
+		"nacosPassword":    extractNacosConfig(p.EffectiveConfig, "spring.cloud.nacos.password"),
+		"nacosAccessToken": extractNacosConfig(p.EffectiveConfig, "spring.cloud.nacos.config.access-token"),
+		"localPath":        localPath,
+		"jarPath":          p.JarPath,
+		"jarEntry":         p.JarEntry,
 	}
 
 	snapJSON, err := sc.grpcSrv.CollectConfigs(agentID, params, 30*time.Second)
@@ -179,6 +207,22 @@ func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
 		len(report.NacosLocal) + len(report.NacosJar) + len(report.LocalJar)
 	log.Printf("[扫描调度器] Agent %s 项目 %s 配置比对完成: 一致 %d, 差异 %d",
 		agentID, p.Name, len(report.Consistent), diffCount)
+
+	// v0.5.3: 持久化比对结果到 Raft, 供前端查询
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		log.Printf("[扫描调度器] Agent %s 项目 %s 序列化比对结果失败: %v", agentID, p.Name, err)
+		return
+	}
+	projectID := agentID + "|" + p.Path
+	upd := &store.ConfigDiffUpdate{
+		ProjectID:     projectID,
+		ConfigDiff:    string(reportJSON),
+		DiffScannedAt: time.Now().UnixMilli(),
+	}
+	if err := sc.store.SetConfigDiff(upd); err != nil {
+		log.Printf("[扫描调度器] Agent %s 项目 %s 持久化比对结果失败: %v", agentID, p.Name, err)
+	}
 }
 
 // extractNacosAddr 从 effectiveConfig 中提取 Nacos 地址。

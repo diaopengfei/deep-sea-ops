@@ -15,17 +15,40 @@ type command struct {
 	Op          string              `json:"op"`          // 操作类型
 	Server      model.Server        `json:"server"`      // add_server / upd_server 时携带
 	ServerID    string              `json:"serverId"`    // del_server 时携带
+	ServerUpd   *ServerUpdate       `json:"serverUpd"`   // upd_server_fields 时携带(原子部分更新)
 	User        model.User          `json:"user"`        // add_user 时携带
 	Project     model.ProjectRecord `json:"project"`     // add_project / del_project 时携带
 	Task        model.DeployTask    `json:"task"`        // add_deploy_task / upd_deploy_task 时携带
 	CredID      string              `json:"credId"`      // 凭据 ID(del_credential 用)
 	Credential  model.SSHCredential `json:"credential"`  // add_credential 时携带
+	ConfigDiff  *ConfigDiffUpdate   `json:"configDiff"`  // set_config_diff 时携带
+}
+
+// ServerUpdate 是原子部分更新服务器的参数(解决读-改-写竞态)。
+// FSM.Apply 中读取现有记录, 只更新非零值字段, 整个操作在一个 Raft 日志中原子完成。
+type ServerUpdate struct {
+	ID       int64  `json:"id"`       // 必填: 要更新的服务器 ID
+	Name     string `json:"name"`     // 空表示不修改
+	IP       string `json:"ip"`       // 空表示不修改
+	Port     int    `json:"port"`     // 0 表示不修改
+	OS       string `json:"os"`       // 空表示不修改
+	Username string `json:"username"` // 空表示不修改
+	Password string `json:"password"` // 空表示不修改(已加密的密文)
+	Status   string `json:"status"`   // 空表示不修改
+}
+
+// ConfigDiffUpdate 是更新项目配置比对结果的参数。
+type ConfigDiffUpdate struct {
+	ProjectID    string `json:"projectId"`    // 项目 ID
+	ConfigDiff   string `json:"configDiff"`   // 配置比对结果 JSON
+	DiffScannedAt int64 `json:"diffScannedAt"` // 比对时间(unix 毫秒)
 }
 
 // op 常量, 避免到处写字符串字面量(笔误难以排查)。
 const (
 	opAddServer          = "add_server"
 	opUpdServer          = "upd_server"
+	opUpdServerFields    = "upd_server_fields" // v0.5.3: 原子部分更新, 解决读-改-写竞态
 	opDelServer          = "del_server"
 	opAddUser            = "add_user"
 	opAddProject         = "add_project"
@@ -35,4 +58,5 @@ const (
 	opUpdDeployTask      = "upd_deploy_task"
 	opAddCredential      = "add_credential"
 	opDelCredential      = "del_credential"
+	opSetConfigDiff      = "set_config_diff" // v0.5.3: 持久化配置比对结果
 )

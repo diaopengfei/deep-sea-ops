@@ -7,12 +7,21 @@ package sshclient
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+// 默认命令执行超时
+const defaultCmdTimeout = 60 * time.Second
+
+// insecureWarned 控制未校验 HostKey 的警告只打印一次(避免日志刷屏)。
+var insecureWarned sync.Once
 
 // Client 封装一个 SSH 会话, 提供文件上传和命令执行能力。
 type Client struct {
@@ -21,11 +30,16 @@ type Client struct {
 
 // Config 是连接一台远程服务器所需的参数(凭据已解密)。
 type Config struct {
-	Host       string // IP 地址
-	Port       int    // SSH 端口, 默认 22
-	Username   string // SSH 用户名
-	Password   string // 明文密码(authType=password 时用)
+	Host     string // IP 地址
+	Port     int    // SSH 端口, 默认 22
+	Username string // SSH 用户名
+	Password string // 明文密码(authType=password 时用)
 	PrivateKey string // PEM 格式私钥(authType=key 时用)
+
+	// HostKey 是可选的 SSH 主机公钥(PEM 格式)。
+	// 设置后用 ssh.FixedHostKey 校验, 防止中间人攻击。
+	// 留空则跳过校验(仅适用于内网可信环境), 启动时打印一次警告。
+	HostKey string
 }
 
 // NewClient 用给定凭据建立 SSH 连接。
@@ -49,10 +63,25 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("未提供认证方式(密码或私钥)")
 	}
 
+	// HostKey 校验策略: 提供了 HostKey 则严格校验; 否则跳过(内网部署场景)并警告
+	var hostKeyCb ssh.HostKeyCallback
+	if cfg.HostKey != "" {
+		pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(cfg.HostKey))
+		if err != nil {
+			return nil, fmt.Errorf("解析 HostKey 失败: %w", err)
+		}
+		hostKeyCb = ssh.FixedHostKey(pk)
+	} else {
+		insecureWarned.Do(func() {
+			log.Println("[警告] SSH 未校验 HostKey (内网部署场景可接受, 生产环境建议配置 HostKey)")
+		})
+		hostKeyCb = ssh.InsecureIgnoreHostKey()
+	}
+
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.Username,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 简化: 不校验 host key(内网部署场景)
+		HostKeyCallback: hostKeyCb,
 		Timeout:         15 * time.Second,
 	}
 
@@ -73,7 +102,14 @@ func (c *Client) Close() error {
 }
 
 // RunCommand 在远程服务器上执行一条命令, 返回合并的 stdout+stderr 输出。
+// 命令执行有超时保护(defaultCmdTimeout), 超时后终止远程进程并关闭 session。
 func (c *Client) RunCommand(cmd string) (string, error) {
+	return c.RunCommandTimeout(cmd, defaultCmdTimeout)
+}
+
+// RunCommandTimeout 在远程服务器上执行一条命令, 可自定义超时。
+// 超时后发送 SIGKILL 终止远程进程, 关闭 session, 返回超时错误。
+func (c *Client) RunCommandTimeout(cmd string, timeout time.Duration) (string, error) {
 	session, err := c.client.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("创建 session 失败: %w", err)
@@ -83,19 +119,60 @@ func (c *Client) RunCommand(cmd string) (string, error) {
 	var buf bytes.Buffer
 	session.Stdout = &buf
 	session.Stderr = &buf
-	if err := session.Run(cmd); err != nil {
-		return buf.String(), fmt.Errorf("命令执行失败: %w, 输出: %s", err, buf.String())
+
+	if err := session.Start(cmd); err != nil {
+		return buf.String(), fmt.Errorf("命令启动失败: %w", err)
 	}
-	return buf.String(), nil
+
+	// 超时控制: 用 timer + goroutine 等待命令结束
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- session.Wait()
+	}()
+
+	select {
+	case err := <-doneCh:
+		if err != nil {
+			return buf.String(), fmt.Errorf("命令执行失败: %w, 输出: %s", err, buf.String())
+		}
+		return buf.String(), nil
+	case <-time.After(timeout):
+		// 超时: 终止远程进程并关闭 session, 让等待中的 goroutine 收到错误退出
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		<-doneCh // 等待 goroutine 结束, 防止泄漏
+		return buf.String(), fmt.Errorf("命令执行超时 (%v), 命令: %s, 输出: %s", timeout, cmd, buf.String())
+	}
+}
+
+// shellQuote 对路径做 shell 单引号转义, 防止注入。
+// 单引号内的内容不被 shell 解释, 只需处理单引号本身: ' → '\''
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// safePath 检查路径是否安全(不含 shell 元字符的路径形式)。
+// 允许: 字母/数字/._-/:
+// 拒绝: ; & | ` $ ( ) < > \n 等
+func safePath(p string) error {
+	for _, r := range p {
+		switch r {
+		case ';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r':
+			return fmt.Errorf("路径包含不安全字符 %q: %s", r, p)
+		}
+	}
+	return nil
 }
 
 // UploadFile 通过 SCP 协议上传本地文件到远程服务器。
 // remotePath 是远程目标路径(含文件名), 会自动创建父目录。
 func (c *Client) UploadFile(localPath, remotePath string) error {
-	// 确保远程目录存在
+	if err := safePath(remotePath); err != nil {
+		return fmt.Errorf("远程路径不安全: %w", err)
+	}
 	remoteDir := filepath.Dir(remotePath)
 	if remoteDir != "." && remoteDir != "/" {
-		if _, err := c.RunCommand("mkdir -p " + remoteDir); err != nil {
+		if _, err := c.RunCommand("mkdir -p " + shellQuote(remoteDir)); err != nil {
 			return fmt.Errorf("创建远程目录失败: %w", err)
 		}
 	}
@@ -126,8 +203,8 @@ func (c *Client) UploadFile(localPath, remotePath string) error {
 		w.Write([]byte{0})
 	}()
 
-	// 远程用 scp -t 接收
-	if err := session.Run("scp -t " + remoteDir); err != nil {
+	// 远程用 scp -t 接收, 路径用 shellQuote 转义
+	if err := session.Run("scp -t " + shellQuote(remoteDir)); err != nil {
 		return fmt.Errorf("SCP 上传失败: %w", err)
 	}
 	return nil
@@ -135,9 +212,12 @@ func (c *Client) UploadFile(localPath, remotePath string) error {
 
 // UploadContent 把内存内容作为文件上传到远程服务器。
 func (c *Client) UploadContent(content []byte, remotePath string) error {
+	if err := safePath(remotePath); err != nil {
+		return fmt.Errorf("远程路径不安全: %w", err)
+	}
 	remoteDir := filepath.Dir(remotePath)
 	if remoteDir != "." && remoteDir != "/" {
-		if _, err := c.RunCommand("mkdir -p " + remoteDir); err != nil {
+		if _, err := c.RunCommand("mkdir -p " + shellQuote(remoteDir)); err != nil {
 			return fmt.Errorf("创建远程目录失败: %w", err)
 		}
 	}
@@ -160,7 +240,7 @@ func (c *Client) UploadContent(content []byte, remotePath string) error {
 		w.Write([]byte{0})
 	}()
 
-	if err := session.Run("scp -t " + remoteDir); err != nil {
+	if err := session.Run("scp -t " + shellQuote(remoteDir)); err != nil {
 		return fmt.Errorf("SCP 上传失败: %w", err)
 	}
 	return nil

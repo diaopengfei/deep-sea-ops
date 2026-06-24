@@ -172,6 +172,13 @@ func (s *Store) UpdServer(srv model.Server) error {
 	return s.apply(cmd)
 }
 
+// UpdServerFields 提交"原子部分更新服务器"命令到 Raft(解决读-改-写竞态)。
+// FSM 在同一个事务中读取现有记录并合并非零值字段, 整个操作原子完成。
+func (s *Store) UpdServerFields(upd *ServerUpdate) error {
+	cmd := command{Op: opUpdServerFields, ServerUpd: upd}
+	return s.apply(cmd)
+}
+
 // DelServer 提交"删除服务器"命令到 Raft。
 func (s *Store) DelServer(id string) error {
 	cmd := command{Op: opDelServer, ServerID: id}
@@ -230,6 +237,13 @@ func (s *Store) GetProject(id string) (*model.ProjectRecord, bool) {
 	return s.fsm.GetProject(id)
 }
 
+// SetConfigDiff 提交"更新项目配置比对结果"命令到 Raft。
+// 后台扫描调度器比对完成后调用, 结果持久化供前端查询。
+func (s *Store) SetConfigDiff(upd *ConfigDiffUpdate) error {
+	cmd := command{Op: opSetConfigDiff, ConfigDiff: upd}
+	return s.apply(cmd)
+}
+
 // --- 部署任务相关(M5) ---
 
 // AddDeployTask 提交"新增部署任务"命令到 Raft。
@@ -282,9 +296,23 @@ func (s *Store) ListCredentials() []model.SSHCredential {
 
 // AddVoter 把一个新节点加入集群(Leader 调用)。
 // nodeID/addr 是新节点的 Raft ID 和通信地址。
+// v0.5.3: 在 AddVoter 前做最终 voter 数量校验, 缩小 TOCTOU 窗口。
 func (s *Store) AddVoter(nodeID, addr string) error {
 	if s.raft.State() != raft.Leader {
 		return errors.New("只有 Leader 能加节点")
+	}
+	// 最终校验: 获取最新集群配置, 检查加入后是否超范围
+	future := s.raft.GetConfiguration()
+	if err := future.Error(); err == nil {
+		voterCount := 0
+		for _, srv := range future.Configuration().Servers {
+			if srv.Suffrage == raft.Voter {
+				voterCount++
+			}
+		}
+		if voterCount+1 > 7 {
+			return fmt.Errorf("raft 集群 Voter 数量超限(当前 %d, 加入后 %d, 上限 7)", voterCount, voterCount+1)
+		}
 	}
 	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 5*time.Second)
 	return f.Error()

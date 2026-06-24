@@ -92,7 +92,7 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 		return result
 	}
 
-	// 2. 确定 binary 路径
+	// 2. 确定 binary 路径, 校验文件名安全(防 shell 注入)
 	binaryPath := req.BinaryPath
 	if binaryPath == "" {
 		if req.Role == RoleRaft {
@@ -100,6 +100,11 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 		} else {
 			binaryPath = "./deepsea-agent"
 		}
+	}
+	binBase := filepath.Base(binaryPath)
+	if err := validateBinName(binBase); err != nil {
+		result.Output = "二进制文件名不安全: " + err.Error()
+		return result
 	}
 
 	// 3. SSH 连接
@@ -113,15 +118,15 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	var steps []string
 
 	// 4. 上传二进制
-	remoteBinPath := "/opt/deepsea/" + filepath.Base(binaryPath)
+	remoteBinPath := "/opt/deepsea/" + binBase
 	if err := client.UploadFile(binaryPath, remoteBinPath); err != nil {
 		result.Output = "上传二进制失败: " + err.Error()
 		return result
 	}
 	steps = append(steps, "已上传二进制到 "+remoteBinPath)
 
-	// chmod +x
-	if _, err := client.RunCommand("chmod +x " + remoteBinPath); err != nil {
+	// chmod +x (路径已校验安全, 用 shellQuote 二次防护)
+	if _, err := client.RunCommand("chmod +x " + shellQuote(remoteBinPath)); err != nil {
 		result.Output = "chmod 失败: " + err.Error()
 		return result
 	}
@@ -149,9 +154,9 @@ func (inj *Injector) Inject(req InjectRequest) InjectResult {
 	}
 	steps = append(steps, "已写入 systemd 配置 "+remoteServicePath)
 
-	// 6. 启动 systemd 服务
+	// 6. 启动 systemd 服务 (serviceName 由 role 派生, role 已校验为 raft/agent, 安全)
 	startCmd := fmt.Sprintf("systemctl daemon-reload && systemctl enable %s && systemctl restart %s", serviceName, serviceName)
-	if out, err := client.RunCommand(startCmd); err != nil {
+	if out, err := client.RunCommandTimeout(startCmd, 120*time.Second); err != nil {
 		result.Output = "启动服务失败: " + err.Error() + "\n" + out
 		return result
 	}
@@ -263,4 +268,27 @@ func portFromAddr(addr string) string {
 		return "7000"
 	}
 	return addr[idx+1:]
+}
+
+// validateBinName 校验二进制文件名是否安全(仅允许字母/数字/._-)。
+func validateBinName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("文件名无效: %q", name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return fmt.Errorf("文件名含不安全字符 %q: %s", r, name)
+		}
+	}
+	return nil
+}
+
+// shellQuote 对路径做 shell 单引号转义, 防止注入。
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

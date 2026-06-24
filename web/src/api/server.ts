@@ -179,6 +179,9 @@ export interface ProjectRecord {
   running: boolean
   pid: number
   scannedAt: string
+  // v0.5.3: 配置比对结果(JSON 字符串, 前端解析展示)
+  configDiffJson?: string
+  diffScannedAt?: number
 }
 
 export async function listProjects(agentId?: string): Promise<ProjectRecord[]> {

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -53,6 +57,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("启动 Raft 失败: %v", err)
 	}
+	defer storeInstance.Close()
 
 	// 鉴权服务: 注入 store, 用户数据走 Raft 保证多节点一致
 	authSvc := auth.New(storeInstance)
@@ -77,7 +82,9 @@ func main() {
 	go func() {
 		log.Printf("gRPC(供 Agent 连接)监听 %s", cfg.GRPC.Addr)
 		if err := g.Serve(grpcLis); err != nil {
-			log.Fatalf("gRPC 服务退出: %v", err)
+			// 不用 log.Fatalf(会跳过 defer), 用 GracefulStop + 通知 main 退出
+			log.Printf("gRPC 服务退出: %v", err)
+			g.GracefulStop()
 		}
 	}()
 
@@ -88,8 +95,33 @@ func main() {
 
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
 	handler := api.New(storeInstance, grpcSrv, authSvc)
-	log.Printf("HTTP(供前端访问)监听 %s", cfg.HTTP.Addr)
-	log.Fatal(http.ListenAndServe(cfg.HTTP.Addr, handler))
+	httpSrv := &http.Server{
+		Addr:    cfg.HTTP.Addr,
+		Handler: handler,
+	}
+
+	// HTTP 服务用 goroutine 启动, main goroutine 监听信号做优雅关闭
+	go func() {
+		log.Printf("HTTP(供前端访问)监听 %s", cfg.HTTP.Addr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP 服务异常退出: %v", err)
+			os.Exit(1)
+		}
+	}()
+
+	// 优雅关闭: 收到 SIGINT/SIGTERM 时停止 HTTP/gRPC/扫描器, defer 链正常执行
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	<-stopCh
+	log.Println("收到退出信号, 开始优雅关闭...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP 关闭出错: %v", err)
+	}
+	g.GracefulStop()
+	log.Println("已关闭, 退出")
 }
 
 // validateSecurityConfig 校验安全配置, 对不安全的情况打印警告。

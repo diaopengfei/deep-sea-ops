@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/raft"
 
 	"github.com/deepsea-ops/server/internal/agentclient"
 	"github.com/deepsea-ops/server/internal/auth"
@@ -426,6 +428,8 @@ func handleDeleteServer(w http.ResponseWriter, r *http.Request, s *store.Store, 
 }
 
 // handleUpdateServer 更新服务器信息。
+// v0.5.3: 改用 UpdServerFields 原子部分更新, 消除读-改-写竞态。
+// FSM 在同一个 Raft 日志中读取现有记录并合并非零值字段, 不再有并发覆盖问题。
 func handleUpdateServer(w http.ResponseWriter, r *http.Request, s *store.Store, idStr string) {
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -446,53 +450,39 @@ func handleUpdateServer(w http.ResponseWriter, r *http.Request, s *store.Store, 
 		return
 	}
 
-	// 查现有记录, 保留原值
-	servers := s.ListServers()
-	var existing *model.Server
-	for i := range servers {
-		if servers[i].ID == id {
-			existing = &servers[i]
-			break
-		}
-	}
-	if existing == nil {
-		auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "服务器不存在"})
-		return
-	}
-
-	if req.Name != "" {
-		existing.Name = req.Name
-	}
-	if req.IP != "" {
-		existing.IP = req.IP
-	}
-	if req.Port != 0 {
-		existing.Port = req.Port
-	}
-	if req.OS != "" {
-		existing.OS = req.OS
-	}
-	if req.Username != "" {
-		existing.Username = req.Username
-	}
-	if req.Status != "" {
-		existing.Status = req.Status
-	}
-	// 密码非空才更新(前端不回显密码, 修改时才传)
+	// 密码非空才加密(前端不回显密码, 修改时才传)
+	encPassword := ""
 	if req.Password != "" {
-		encPassword, err := crypto.Encrypt(req.Password)
+		encPassword, err = crypto.Encrypt(req.Password)
 		if err != nil {
 			auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "加密密码失败: " + err.Error()})
 			return
 		}
-		existing.Password = encPassword
 	}
 
-	if err := s.UpdServer(*existing); err != nil {
+	// 原子部分更新: FSM 在 Raft 日志中读取现有记录并合并, 无竞态
+	upd := &store.ServerUpdate{
+		ID:       id,
+		Name:     req.Name,
+		IP:       req.IP,
+		Port:     req.Port,
+		OS:       req.OS,
+		Username: req.Username,
+		Password: encPassword,
+		Status:   req.Status,
+	}
+	if err := s.UpdServerFields(upd); err != nil {
 		auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	auth.WriteJSON(w, http.StatusOK, existing)
+
+	// 返回更新后的完整记录
+	updated, ok := s.GetServer(id)
+	if !ok {
+		auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "更新后服务器不存在"})
+		return
+	}
+	auth.WriteJSON(w, http.StatusOK, updated)
 }
 
 func handleClusterJoin(w http.ResponseWriter, r *http.Request, s *store.Store) {
@@ -576,7 +566,10 @@ func handleScanProjects(w http.ResponseWriter, r *http.Request, gs *grpcserver.S
 	var scanReq struct {
 		ScanDirs string `json:"scanDirs"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&scanReq)
+	// scanDirs 是可选参数, 解码失败时用空值(扫描默认目录), 不阻断请求
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&scanReq); err != nil && err != io.EOF {
+		log.Printf("警告: 解析 scanDirs 请求体失败(用默认值): %v", err)
+	}
 	scanResult, err := gs.ScanProjects(agentID, scanReq.ScanDirs, 60*time.Second)
 	if err != nil {
 		auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1018,7 +1011,8 @@ func handleListOpsNodes(w http.ResponseWriter, r *http.Request, s *store.Store, 
 		if isSelf {
 			state = clusterInfo.State
 		} else if isLeader {
-			state = "Leader"
+			// 用 raft.Leader 常量, 不硬编码字符串
+			state = raft.Leader.String()
 		}
 		nodes = append(nodes, OpsNode{
 			Type:     "raft",
@@ -1051,7 +1045,8 @@ func handleListOpsNodes(w http.ResponseWriter, r *http.Request, s *store.Store, 
 // withLeaderProxy 包装 handler, 实现"任意节点可访问, 自动转发 Leader"。
 //
 // 规则:
-//   - GET 请求(读): 本地处理(FSM 读是最终一致的, Follower 也能读)
+//   - GET 请求(读 FSM 数据): 本地处理(Follower 也能读 Raft 强一致数据)
+//   - agent 相关 GET (/api/agents, /api/ops-nodes): 转发到 Leader(Agent 只连 Leader gRPC, Follower 无数据)
 //   - 写请求(POST/PUT/DELETE): 如果本节点不是 Leader, 转发给 Leader
 //   - /api/healthz, /api/login, /api/cluster/info: 始终本地处理
 //
@@ -1070,7 +1065,18 @@ func withLeaderProxy(next http.Handler, s *store.Store) http.Handler {
 			return
 		}
 
-		// GET 请求: 本地处理
+		// agent 相关 GET 请求: Agent 只连 Leader 的 gRPC, Follower 本地无数据, 必须转发
+		if r.Method == http.MethodGet && isAgentDataPath(r.URL.Path) {
+			info := s.ClusterInfo()
+			if info.State == "Leader" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			forwardToLeader(w, r, info, "agent-data GET")
+			return
+		}
+
+		// 其他 GET 请求(FSM 数据): 本地处理
 		if r.Method == http.MethodGet {
 			next.ServeHTTP(w, r)
 			return
@@ -1084,32 +1090,46 @@ func withLeaderProxy(next http.Handler, s *store.Store) http.Handler {
 		}
 
 		// 非 Leader: 转发给 Leader
-		leaderHTTPAddr := deriveHTTPAddr(info.Leader)
-		if leaderHTTPAddr == "" {
-			auth.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "当前节点不是 Leader, 且无法确定 Leader HTTP 地址",
-			})
-			return
-		}
-
-		target, err := url.Parse("http://" + leaderHTTPAddr)
-		if err != nil {
-			auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "解析 Leader 地址失败"})
-			return
-		}
-
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		// 自定义错误处理: Leader 不可达时返回明确错误, 而非空响应
-		proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
-			log.Printf("入口代理: 转发到 Leader %s 失败: %v", leaderHTTPAddr, err)
-			auth.WriteJSON(rw, http.StatusBadGateway, map[string]string{
-				"error": "转发到 Leader 失败: " + err.Error(),
-			})
-		}
-		// 记录转发日志
-		log.Printf("入口代理: 转发 %s %s -> Leader %s", r.Method, r.URL.Path, leaderHTTPAddr)
-		proxy.ServeHTTP(w, r)
+		forwardToLeader(w, r, info, "write")
 	})
+}
+
+// forwardToLeader 把请求转发给 Leader 节点。
+func forwardToLeader(w http.ResponseWriter, r *http.Request, info store.ClusterInfo, tag string) {
+	leaderHTTPAddr := deriveHTTPAddr(info.Leader)
+	if leaderHTTPAddr == "" {
+		auth.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "当前节点不是 Leader, 且无法确定 Leader HTTP 地址",
+		})
+		return
+	}
+
+	target, err := url.Parse("http://" + leaderHTTPAddr)
+	if err != nil {
+		auth.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "解析 Leader 地址失败"})
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+		log.Printf("入口代理[%s]: 转发到 Leader %s 失败: %v", tag, leaderHTTPAddr, err)
+		auth.WriteJSON(rw, http.StatusBadGateway, map[string]string{
+			"error": "转发到 Leader 失败: " + err.Error(),
+		})
+	}
+	log.Printf("入口代理[%s]: 转发 %s %s -> Leader %s", tag, r.Method, r.URL.Path, leaderHTTPAddr)
+	proxy.ServeHTTP(w, r)
+}
+
+// isAgentDataPath 判断路径是否为 Agent 实时数据路径(数据只在 Leader 内存中)。
+// 这些路径的 GET 请求在 Follower 上必须转发到 Leader。
+func isAgentDataPath(path string) bool {
+	switch path {
+	case "/api/agents", "/api/ops-nodes":
+		return true
+	}
+	// /api/agents/{id}/* 的写操作也会走到这里, 但写操作本就转发, 不影响
+	return false
 }
 
 // isLocalOnlyPath 判断路径是否始终本地处理(不转发)。

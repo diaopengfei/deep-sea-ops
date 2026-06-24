@@ -20,6 +20,11 @@ type ProjectRecord struct {
 	Running    bool      `json:"running"`    // 扫描时是否在运行
 	PID        int       `json:"pid"`        // 运行中进程 PID
 	ScannedAt  time.Time `json:"scannedAt"`  // 扫描时间
+
+	// v0.5.3: 配置比对结果(JSON 字符串, 前端解析展示)
+	// 由后台扫描调度器自动比对后写入, 空表示尚未比对
+	ConfigDiffJSON string `json:"configDiffJson,omitempty"`
+	DiffScannedAt  int64  `json:"diffScannedAt,omitempty"` // 比对时间(unix 毫秒)
 }
 
 // DeployTask 是一次扩容/迁移部署任务。

@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.5.2-blue" alt="v0.5.2" />
+  <img src="https://img.shields.io/badge/version-v0.5.3-blue" alt="v0.5.3" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -347,6 +347,21 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
   - 扫描后自动触发配置比对 (从 effectiveConfig 提取 Nacos 地址)
   - 注入前校验目标服务器 OS (仅支持 Linux)
   - 深度代码审查, 修复 raft 校验逻辑/ops-nodes 状态/前端预填等 5 处问题
+
+- **v0.5.3** 深度代码审查修复 12 处遗留问题 ✅
+  
+  - SSH shell 注入防护: 路径安全校验 + shellQuote 转义 + 二进制文件名白名单
+  - SSH 命令超时保护: RunCommandTimeout 防止 goroutine 泄漏 (默认 60s, 可配置)
+  - SSH HostKey 校验: 支持配置主机公钥, 未配置时打印一次警告
+  - 优雅关闭: 替换 log.Fatal 为信号监听 + http.Server.Shutdown, defer 链正常执行
+  - Follower GET 转发: /api/agents 和 /api/ops-nodes 的 GET 请求转发到 Leader (Agent 只连 Leader)
+  - 服务器更新原子化: UpdServerFields 在 FSM 中读-改-写原子完成, 消除竞态
+  - Raft voter 数量 TOCTOU: AddVoter 前做最终校验, 缩小竞态窗口
+  - 扫描并发互斥: per-agent sync.Mutex + TryLock, 防止后台与手动扫描并发覆盖
+  - 配置比对持久化: 比对结果存入 ProjectRecord.ConfigDiffJSON, 前端直接展示
+  - Nacos 认证参数: 从 effectiveConfig 提取 username/password/accessToken/namespace
+  - raft.Leader 常量: 替换硬编码 "Leader" 字符串
+  - 错误日志化: FSM Snapshot/Restore/ClearAgentProjects 中的静默错误改为日志输出
 
 - **后续**
   

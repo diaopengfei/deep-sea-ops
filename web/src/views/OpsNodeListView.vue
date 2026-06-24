@@ -121,14 +121,27 @@
       <div v-if="configProject" class="config-meta">
         <span>项目: <b>{{ configProject.name }}</b></span>
         <span class="sub-text">{{ configProject.path }}</span>
+        <span v-if="configProject.diffScannedAt" class="sub-text">
+          比对时间: {{ new Date(configProject.diffScannedAt).toLocaleString('zh-CN', { hour12: false }) }}
+        </span>
       </div>
-      <el-table :data="configItems" style="width: 100%" empty-text="等待后台自动比对">
-        <el-table-column prop="key" label="配置项" min-width="160" />
-        <el-table-column prop="nacosValue" label="Nacos 值" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="localValue" label="本地值" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="jarValue" label="Jar 值" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="effectiveValue" label="生效值" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="source" label="来源" width="100" />
+      <!-- 采集错误提示 -->
+      <el-alert
+        v-for="err in configErrors"
+        :key="err.source"
+        :title="err.source + ' 采集失败: ' + err.msg"
+        type="error"
+        :closable="false"
+        style="margin-bottom: 8px"
+      />
+      <!-- 差异分类展示 -->
+      <el-table :data="configItems" style="width: 100%" empty-text="等待后台自动比对(每 10 分钟)">
+        <el-table-column prop="category" label="差异类别" width="220" />
+        <el-table-column label="配置行" min-width="500">
+          <template #default="{ row }">
+            <div v-for="(line, i) in row.lines" :key="i" class="config-line">{{ line }}</div>
+          </template>
+        </el-table-column>
       </el-table>
       <div v-if="configProject && configProject.configFiles && configProject.configFiles.length" class="config-files">
         <div class="config-files-title">涉及的配置文件:</div>
@@ -224,23 +237,60 @@ function viewRaftDetail(row: OpsNode) {
 }
 
 // --- 配置比对对话框 ---
+// DiffReport 对应后端 configdiff.DiffReport 的 JSON 结构
+interface DiffReport {
+  nacosErr?: string
+  localErr?: string
+  jarErr?: string
+  consistent?: string[]
+  onlyNacos?: string[]
+  onlyLocal?: string[]
+  onlyJar?: string[]
+  nacosLocal?: string[]
+  nacosJar?: string[]
+  localJar?: string[]
+}
+
 interface ConfigDiffItem {
-  key: string
-  nacosValue: string
-  localValue: string
-  jarValue: string
-  effectiveValue: string
-  source: string
+  category: string
+  lines: string[]
 }
 
 const configDialogVisible = ref(false)
 const configProject = ref<ProjectRecord | null>(null)
 const configItems = ref<ConfigDiffItem[]>([])
+const configErrors = ref<{ source: string; msg: string }[]>([])
 
 function openConfigDialog(row: ProjectRecord) {
   configProject.value = row
-  // 持久化的项目记录暂未携带三路比对明细, 等待后台自动比对
   configItems.value = []
+  configErrors.value = []
+
+  // v0.5.3: 从持久化的 configDiffJson 解析比对结果
+  if (row.configDiffJson) {
+    try {
+      const report: DiffReport = JSON.parse(row.configDiffJson)
+      // 采集错误
+      if (report.nacosErr) configErrors.value.push({ source: 'Nacos', msg: report.nacosErr })
+      if (report.localErr) configErrors.value.push({ source: '本地', msg: report.localErr })
+      if (report.jarErr) configErrors.value.push({ source: 'Jar', msg: report.jarErr })
+      // 按差异类别分组展示
+      const categories: { label: string; lines?: string[] }[] = [
+        { label: '三方一致', lines: report.consistent },
+        { label: '仅 Nacos 有', lines: report.onlyNacos },
+        { label: '仅本地有', lines: report.onlyLocal },
+        { label: '仅 Jar 有', lines: report.onlyJar },
+        { label: 'Nacos + 本地 (Jar 缺失)', lines: report.nacosLocal },
+        { label: 'Nacos + Jar (本地缺失)', lines: report.nacosJar },
+        { label: '本地 + Jar (Nacos 缺失)', lines: report.localJar },
+      ]
+      configItems.value = categories
+        .filter((c) => c.lines && c.lines.length > 0)
+        .map((c) => ({ category: c.label, lines: c.lines! }))
+    } catch (e) {
+      ElMessage.warning('解析配置比对结果失败: ' + (e as Error).message)
+    }
+  }
   configDialogVisible.value = true
 }
 
@@ -387,5 +437,14 @@ onUnmounted(() => {
 
 .config-file-tag {
   margin: 0 6px 6px 0;
+}
+
+.config-line {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  color: #303133;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

@@ -67,6 +67,8 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 			return f.applyAddServer(tx, &cmd.Server)
 		case opUpdServer:
 			return f.applyUpdServer(tx, &cmd.Server)
+		case opUpdServerFields:
+			return f.applyUpdServerFields(tx, cmd.ServerUpd)
 		case opDelServer:
 			return f.applyDelServer(tx, cmd.ServerID)
 		case opAddUser:
@@ -77,6 +79,8 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 			return f.applyDelProject(tx, cmd.Project.ID)
 		case opClearAgentProjects:
 			return f.applyClearAgentProjects(tx, cmd.Project.AgentID)
+		case opSetConfigDiff:
+			return f.applySetConfigDiff(tx, cmd.ConfigDiff)
 		case opAddDeployTask:
 			return f.applyAddDeployTask(tx, cmd.Task)
 		case opUpdDeployTask:
@@ -132,6 +136,51 @@ func (f *FSM) applyUpdServer(tx *bbolt.Tx, srv *model.Server) error {
 		return err
 	}
 	return b.Put([]byte(strconv.FormatInt(srv.ID, 10)), val)
+}
+
+// applyUpdServerFields 原子部分更新服务器(解决读-改-写竞态)。
+// 在同一个 bbolt 事务中读取现有记录, 只更新非零值字段, 整个操作原子完成。
+func (f *FSM) applyUpdServerFields(tx *bbolt.Tx, upd *ServerUpdate) error {
+	if upd == nil {
+		return fmt.Errorf("ServerUpdate 为空")
+	}
+	b := tx.Bucket(serversBucket)
+	key := []byte(strconv.FormatInt(upd.ID, 10))
+	val := b.Get(key)
+	if val == nil {
+		return fmt.Errorf("服务器不存在: ID=%d", upd.ID)
+	}
+	var srv model.Server
+	if err := json.Unmarshal(val, &srv); err != nil {
+		return fmt.Errorf("反序列化服务器失败: %w", err)
+	}
+	// 只更新非零值字段
+	if upd.Name != "" {
+		srv.Name = upd.Name
+	}
+	if upd.IP != "" {
+		srv.IP = upd.IP
+	}
+	if upd.Port != 0 {
+		srv.Port = upd.Port
+	}
+	if upd.OS != "" {
+		srv.OS = upd.OS
+	}
+	if upd.Username != "" {
+		srv.Username = upd.Username
+	}
+	if upd.Password != "" {
+		srv.Password = upd.Password
+	}
+	if upd.Status != "" {
+		srv.Status = upd.Status
+	}
+	out, err := json.Marshal(srv)
+	if err != nil {
+		return err
+	}
+	return b.Put(key, out)
 }
 
 // applyDelServer 按 ID 删除服务器。
@@ -254,13 +303,42 @@ func (f *FSM) applyClearAgentProjects(tx *bbolt.Tx, agentID string) error {
 			if p.AgentID == agentID {
 				keysToDelete = append(keysToDelete, []string{string(k)})
 			}
+		} else {
+			log.Printf("[警告] applyClearAgentProjects 反序列化项目失败: key=%s err=%v", string(k), err)
 		}
 		return nil
 	})
 	for _, k := range keysToDelete {
-		_ = b.Delete([]byte(k[0]))
+		if err := b.Delete([]byte(k[0])); err != nil {
+			log.Printf("[警告] applyClearAgentProjects 删除项目失败: key=%s err=%v", k[0], err)
+		}
 	}
 	return nil
+}
+
+// applySetConfigDiff 原子更新项目的配置比对结果。
+// 在同一个 bbolt 事务中读取现有项目记录, 设置 ConfigDiffJSON 和 DiffScannedAt, 原子写回。
+func (f *FSM) applySetConfigDiff(tx *bbolt.Tx, upd *ConfigDiffUpdate) error {
+	if upd == nil {
+		return fmt.Errorf("ConfigDiffUpdate 为空")
+	}
+	b := tx.Bucket(projectsBucket)
+	key := []byte(upd.ProjectID)
+	val := b.Get(key)
+	if val == nil {
+		return fmt.Errorf("项目不存在: ID=%s", upd.ProjectID)
+	}
+	var p model.ProjectRecord
+	if err := json.Unmarshal(val, &p); err != nil {
+		return fmt.Errorf("反序列化项目失败: %w", err)
+	}
+	p.ConfigDiffJSON = upd.ConfigDiff
+	p.DiffScannedAt = upd.DiffScannedAt
+	out, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return b.Put(key, out)
 }
 
 // ListProjects 列出所有项目记录。可选按 agentID 过滤。
@@ -435,7 +513,9 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	if err := f.db.View(func(tx *bbolt.Tx) error {
 		readBucket := func(name []byte, fn func(k, v []byte) error) {
 			if b := tx.Bucket(name); b != nil {
-				_ = b.ForEach(fn)
+				if err := b.ForEach(fn); err != nil {
+					log.Printf("[警告] FSM Snapshot 读取 bucket %s 出错: %v", string(name), err)
+				}
 			}
 		}
 		readBucket(serversBucket, func(k, v []byte) error {
@@ -502,35 +582,50 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 			switch m := items.(type) {
 			case map[string]model.Server:
 				for id, s := range m {
-					val, _ := json.Marshal(s)
+					val, err := json.Marshal(s)
+					if err != nil {
+						return fmt.Errorf("序列化 Server %s 失败: %w", id, err)
+					}
 					if err := b.Put([]byte(id), val); err != nil {
 						return err
 					}
 				}
 			case map[string]model.User:
 				for name, u := range m {
-					val, _ := json.Marshal(u)
+					val, err := json.Marshal(u)
+					if err != nil {
+						return fmt.Errorf("序列化 User %s 失败: %w", name, err)
+					}
 					if err := b.Put([]byte(name), val); err != nil {
 						return err
 					}
 				}
 			case map[string]model.ProjectRecord:
 				for id, p := range m {
-					val, _ := json.Marshal(p)
+					val, err := json.Marshal(p)
+					if err != nil {
+						return fmt.Errorf("序列化 Project %s 失败: %w", id, err)
+					}
 					if err := b.Put([]byte(id), val); err != nil {
 						return err
 					}
 				}
 			case map[string]model.DeployTask:
 				for id, t := range m {
-					val, _ := json.Marshal(t)
+					val, err := json.Marshal(t)
+					if err != nil {
+						return fmt.Errorf("序列化 DeployTask %s 失败: %w", id, err)
+					}
 					if err := b.Put([]byte(id), val); err != nil {
 						return err
 					}
 				}
 			case map[string]model.SSHCredential:
 				for id, c := range m {
-					val, _ := json.Marshal(c)
+					val, err := json.Marshal(c)
+					if err != nil {
+						return fmt.Errorf("序列化 Credential %s 失败: %w", id, err)
+					}
 					if err := b.Put([]byte(id), val); err != nil {
 						return err
 					}
