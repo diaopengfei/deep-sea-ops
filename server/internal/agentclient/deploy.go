@@ -6,9 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
 )
 
 // executeDeploy 在本节点部署一个 Java 项目。
@@ -153,31 +151,9 @@ func startJavaWithRedirect(javaBin, jarPath string, workDir string, logFile *os.
 // Linux: 先 SIGTERM 等 5 秒, 不退出则 SIGKILL; Windows: 直接 taskkill /F。
 func killProcessViaPlatform(pid int) error {
 	if globalOps == nil {
-		// 兜底: 未初始化时用 kill -15/-9
-		return killProcessFallback(pid)
+		return fmt.Errorf("平台抽象层未初始化, 无法停止进程 %d", pid)
 	}
 	return globalOps.Deploy.StopJava(pid)
-}
-
-// killProcessFallback 未初始化时的兜底实现(从原 deploy.go 迁移)。
-func killProcessFallback(pid int) error {
-	if runtime.GOOS == "windows" {
-		return exec.Command("taskkill", "/F", "/PID", fmt.Sprintf("%d", pid)).Run()
-	}
-	// 先发 SIGTERM, 优雅退出
-	if err := exec.Command("kill", "-15", fmt.Sprintf("%d", pid)).Run(); err != nil {
-		return err
-	}
-	// 等待最多 5 秒, 检查进程是否还在
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if exec.Command("kill", "-0", fmt.Sprintf("%d", pid)).Run() != nil {
-			return nil
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	// 仍在运行, 强制 SIGKILL
-	return exec.Command("kill", "-9", fmt.Sprintf("%d", pid)).Run()
 }
 
 // copyFile 复制文件, 用 io.Copy 流式复制避免大 jar 文件 OOM。

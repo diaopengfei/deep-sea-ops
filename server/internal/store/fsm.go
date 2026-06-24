@@ -19,9 +19,9 @@ import (
 var (
 	serversBucket     = []byte("servers")     // 服务器清单
 	usersBucket       = []byte("users")       // 用户账户(登录鉴权)
-	projectsBucket    = []byte("projects")    // 扫描到的项目(M4 持久化)
-	deployTasksBucket = []byte("deploy_tasks") // 部署任务(M5 扩容迁移)
-	credentialsBucket = []byte("credentials") // SSH 凭据(v0.4)
+	projectsBucket    = []byte("projects")    // 扫描到的项目(持久化)
+	deployTasksBucket = []byte("deploy_tasks") // 部署任务(扩容迁移)
+	credentialsBucket = []byte("credentials") // SSH 凭据
 )
 
 // FSM 是状态机。Raft 负责把命令按顺序可靠地送达, FSM 负责收到命令后真正改状态。
@@ -75,8 +75,6 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 			return f.applyAddUser(tx, cmd.User)
 		case opAddProject:
 			return f.applyAddProject(tx, cmd.Project)
-		case opDelProject:
-			return f.applyDelProject(tx, cmd.Project.ID)
 		case opClearAgentProjects:
 			return f.applyClearAgentProjects(tx, cmd.Project.AgentID)
 		case opSetConfigDiff:
@@ -277,7 +275,7 @@ func (f *FSM) ListUsers() []model.User {
 	return out
 }
 
-// --- 项目(M4) ---
+// --- 项目 ---
 
 func (f *FSM) applyAddProject(tx *bbolt.Tx, p model.ProjectRecord) error {
 	b := tx.Bucket(projectsBucket)
@@ -286,11 +284,6 @@ func (f *FSM) applyAddProject(tx *bbolt.Tx, p model.ProjectRecord) error {
 		return err
 	}
 	return b.Put([]byte(p.ID), val)
-}
-
-func (f *FSM) applyDelProject(tx *bbolt.Tx, id string) error {
-	b := tx.Bucket(projectsBucket)
-	return b.Delete([]byte(id))
 }
 
 // applyClearAgentProjects 清除指定 Agent 的所有项目记录(重新扫描前先清旧数据)。
@@ -384,7 +377,7 @@ func (f *FSM) GetProject(id string) (*model.ProjectRecord, bool) {
 	return p, true
 }
 
-// --- 部署任务(M5) ---
+// --- 部署任务 ---
 
 func (f *FSM) applyAddDeployTask(tx *bbolt.Tx, t model.DeployTask) error {
 	b := tx.Bucket(deployTasksBucket)
@@ -437,7 +430,7 @@ func (f *FSM) GetDeployTask(id string) (*model.DeployTask, bool) {
 	return t, true
 }
 
-// --- SSH 凭据(v0.4) ---
+// --- SSH 凭据 ---
 
 func (f *FSM) applyAddCredential(tx *bbolt.Tx, c model.SSHCredential) error {
 	b := tx.Bucket(credentialsBucket)

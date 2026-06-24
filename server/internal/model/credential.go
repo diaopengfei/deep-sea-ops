@@ -1,7 +1,7 @@
 package model
 
 // SSHCredential 是一台服务器的 SSH 连接凭据。
-// 用于 v0.4 自动注入: SSH 推送二进制 + 配置, 远程拉起 systemd。
+// 用于自动注入: SSH 推送二进制 + 配置, 远程拉起 systemd。
 //
 // 安全设计:
 //   - Password 和 PrivateKey 存的是 AES-GCM 加密后的密文, 不存明文

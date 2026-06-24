@@ -2,9 +2,6 @@ package ops
 
 import (
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/deepsea-ops/server/internal/platform"
 )
@@ -45,31 +42,4 @@ func (o *deployOps) StopJava(pid int) error {
 
 func (o *deployOps) DeployDir(projectName string) string {
 	return o.builder.DeployDir(projectName)
-}
-
-// copyFile 复制文件, 用 io.Copy 流式复制避免大 jar 文件 OOM。
-// 从原 agentclient/deploy.go 迁移。
-func copyFile(src, dst string) error {
-	srcF, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcF.Close()
-	dstF, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstF.Close()
-	_, err = io.Copy(dstF, srcF)
-	return err
-}
-
-// deployDirPath 返回部署目录(兼容旧代码)。
-func deployDirPath(builder platform.CommandBuilder, projectName string) string {
-	return builder.DeployDir(projectName)
-}
-
-// targetJarPath 返回目标 jar 路径。
-func targetJarPath(builder platform.CommandBuilder, projectName, jarPath string) string {
-	return filepath.Join(builder.DeployDir(projectName), filepath.Base(jarPath))
 }

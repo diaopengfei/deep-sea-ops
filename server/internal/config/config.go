@@ -20,7 +20,7 @@ type ServerConfig struct {
 	Raft     RaftConfig     `yaml:"raft"`     // Raft 相关配置
 	HTTP     ListenConfig   `yaml:"http"`     // HTTP 监听
 	GRPC     ListenConfig   `yaml:"grpc"`     // gRPC 监听
-	Security SecurityConfig `yaml:"security"` // 安全相关配置 (v0.5.1+)
+	Security SecurityConfig `yaml:"security"` // 安全相关配置
 }
 
 // RaftConfig 是 Raft 相关配置。

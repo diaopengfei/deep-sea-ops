@@ -166,12 +166,6 @@ func (s *Store) AddServer(srv model.Server) (int64, error) {
 	return 0, nil
 }
 
-// UpdServer 提交"更新服务器"命令到 Raft。
-func (s *Store) UpdServer(srv model.Server) error {
-	cmd := command{Op: opUpdServer, Server: srv}
-	return s.apply(cmd)
-}
-
 // UpdServerFields 提交"原子部分更新服务器"命令到 Raft(解决读-改-写竞态)。
 // FSM 在同一个事务中读取现有记录并合并非零值字段, 整个操作原子完成。
 func (s *Store) UpdServerFields(upd *ServerUpdate) error {
@@ -213,7 +207,7 @@ func (s *Store) ListUsers() []model.User {
 	return s.fsm.ListUsers()
 }
 
-// --- 项目相关(M4) ---
+// --- 项目相关 ---
 
 // AddProject 提交"新增项目记录"命令到 Raft。
 func (s *Store) AddProject(p model.ProjectRecord) error {
@@ -232,11 +226,6 @@ func (s *Store) ListProjects(agentID string) []model.ProjectRecord {
 	return s.fsm.ListProjects(agentID)
 }
 
-// GetProject 按 ID 查单个项目。
-func (s *Store) GetProject(id string) (*model.ProjectRecord, bool) {
-	return s.fsm.GetProject(id)
-}
-
 // SetConfigDiff 提交"更新项目配置比对结果"命令到 Raft。
 // 后台扫描调度器比对完成后调用, 结果持久化供前端查询。
 func (s *Store) SetConfigDiff(upd *ConfigDiffUpdate) error {
@@ -244,7 +233,7 @@ func (s *Store) SetConfigDiff(upd *ConfigDiffUpdate) error {
 	return s.apply(cmd)
 }
 
-// --- 部署任务相关(M5) ---
+// --- 部署任务相关 ---
 
 // AddDeployTask 提交"新增部署任务"命令到 Raft。
 func (s *Store) AddDeployTask(t model.DeployTask) error {
@@ -263,12 +252,7 @@ func (s *Store) ListDeployTasks() []model.DeployTask {
 	return s.fsm.ListDeployTasks()
 }
 
-// GetDeployTask 按 ID 查部署任务。
-func (s *Store) GetDeployTask(id string) (*model.DeployTask, bool) {
-	return s.fsm.GetDeployTask(id)
-}
-
-// --- SSH 凭据相关(v0.4) ---
+// --- SSH 凭据相关 ---
 
 // AddCredential 提交"新增 SSH 凭据"命令到 Raft。
 func (s *Store) AddCredential(c model.SSHCredential) error {
@@ -296,7 +280,7 @@ func (s *Store) ListCredentials() []model.SSHCredential {
 
 // AddVoter 把一个新节点加入集群(Leader 调用)。
 // nodeID/addr 是新节点的 Raft ID 和通信地址。
-// v0.5.3: 在 AddVoter 前做最终 voter 数量校验, 缩小 TOCTOU 窗口。
+// 在 AddVoter 前做最终 voter 数量校验, 缩小 TOCTOU 窗口。
 func (s *Store) AddVoter(nodeID, addr string) error {
 	if s.raft.State() != raft.Leader {
 		return errors.New("只有 Leader 能加节点")

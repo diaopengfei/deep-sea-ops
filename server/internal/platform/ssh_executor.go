@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/deepsea-ops/server/internal/shellutil"
 	"github.com/deepsea-ops/server/internal/sshclient"
 )
 
@@ -24,7 +25,7 @@ func (e *SSHExecutor) Run(cmd Command) (string, string, int, error) {
 	// 构造完整命令字符串
 	fullCmd := cmd.Name
 	for _, arg := range cmd.Args {
-		fullCmd += " " + shellQuote(arg)
+		fullCmd += " " + shellutil.Quote(arg)
 	}
 	timeout := cmd.Timeout
 	if timeout == 0 {
@@ -44,7 +45,7 @@ func (e *SSHExecutor) Run(cmd Command) (string, string, int, error) {
 func (e *SSHExecutor) RunBackground(cmd Command) (int, error) {
 	fullCmd := cmd.Name
 	for _, arg := range cmd.Args {
-		fullCmd += " " + shellQuote(arg)
+		fullCmd += " " + shellutil.Quote(arg)
 	}
 	// nohup ... > /dev/null 2>&1 &  后台启动, 立即返回
 	bgCmd := fmt.Sprintf("nohup %s > /dev/null 2>&1 & echo $!", fullCmd)
@@ -63,11 +64,6 @@ func (e *SSHExecutor) RunBackground(cmd Command) (int, error) {
 		}
 	}
 	return pid, nil
-}
-
-// shellQuote 对参数做 shell 单引号转义(从 sshclient 迁移, 统一使用)。
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // trimWhitespace 去除首尾空白。

@@ -19,7 +19,7 @@ import (
 	"github.com/deepsea-ops/server/internal/crypto"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	pb "github.com/deepsea-ops/server/internal/proto/agent"
-	"github.com/deepsea-ops/server/internal/scanner"
+	"github.com/deepsea-ops/server/internal/scheduler"
 	"github.com/deepsea-ops/server/internal/store"
 )
 
@@ -88,8 +88,8 @@ func main() {
 		}
 	}()
 
-	// v0.5.2: 启动后台自动扫描调度器(每 10 分钟扫描所有在线 Agent)
-	scanScheduler := scanner.NewScheduler(storeInstance, grpcSrv, 10*time.Minute)
+	// 启动后台自动扫描调度器(每 10 分钟扫描所有在线 Agent)
+	scanScheduler := scheduler.NewScheduler(storeInstance, grpcSrv, 10*time.Minute)
 	scanScheduler.Start()
 	defer scanScheduler.Stop()
 

@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.6.0-blue" alt="v0.6.0" />
+  <img src="https://img.shields.io/badge/version-v0.6.1-blue" alt="v0.6.1" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -95,65 +95,75 @@
 
 - **Go** 1.22+
 - **Node.js** 18+
-- **Git**
 
-### 方式一: 启动脚本 (推荐)
+### 1. 开发环境启动
 
 ```bash
-# Linux / macOS / Git Bash
-./scripts/start.sh            # 启动控制面 + Agent + 前端
+git clone https://github.com/<your-org>/deepsea-ops.git
+cd deepsea-ops
 
-# Windows PowerShell
-.\scripts\start.ps1           # 同上
+# 一键启动(控制面 + Agent + 前端, 自动生成配置文件)
+./scripts/start.sh          # Linux / macOS / Git Bash
+.\scripts\start.ps1         # Windows PowerShell
 ```
 
 启动后访问 `http://localhost:5173`, 默认账号 `admin / admin123`。
 
-支持的模式:
-
-| 命令                           | 说明                          |
-| ---------------------------- | --------------------------- |
-| `./scripts/start.sh dev`     | 单节点控制面 + Agent + 前端 (默认)    |
-| `./scripts/start.sh cluster` | 3 节点 Raft 本地集群 + Agent + 前端 |
-| `./scripts/start.sh server`  | 仅控制面                        |
-| `./scripts/start.sh agent`   | 仅 Agent                     |
-| `./scripts/start.sh web`     | 仅前端                         |
-
-停止所有进程:
+<details>
+<summary>手动启动(可选)</summary>
 
 ```bash
-./scripts/stop.sh             # Linux / macOS
-.\scripts\stop.ps1            # Windows
-```
-
-### 方式二: 手动启动
-
-```bash
-# 终端 1: 控制面 (使用默认配置 config/server.yaml, 文件不存在则用内置默认值)
+# 终端 1: 控制面
 cd server && go run ./cmd/server
 
-# 终端 2: Agent (使用默认配置 config/agent.yaml)
+# 终端 2: Agent
 cd server && go run ./cmd/agent
 
 # 终端 3: 前端
-cd web && npm install && npm run dev    # http://localhost:5173
+cd web && npm install && npm run dev
 ```
 
-指定配置文件启动:
+指定配置文件: `go run ./cmd/server -config /path/to/server.yaml`
+
+</details>
+
+<details>
+<summary>启动脚本支持的子命令</summary>
+
+| 命令 | 说明 |
+|------|------|
+| `./scripts/start.sh dev` | 单节点控制面 + Agent + 前端(默认) |
+| `./scripts/start.sh cluster` | 3 节点 Raft 本地集群 + Agent + 前端 |
+| `./scripts/start.sh server` | 仅控制面 |
+| `./scripts/start.sh agent` | 仅 Agent |
+| `./scripts/start.sh web` | 仅前端 |
+
+停止: `./scripts/stop.sh` / `.\scripts\stop.ps1`
+
+</details>
+
+### 2. 打包构建
 
 ```bash
-go run ./cmd/server -config /path/to/server.yaml
-go run ./cmd/agent  -config /path/to/agent.yaml
+make build          # 构建后端 + 前端(当前平台)
+make build-linux    # 交叉编译 Linux amd64 纯静态二进制(部署用)
 ```
 
-### 方式三: Make 构建
+产出 `dist/deepsea-server`、`dist/deepsea-agent`(纯静态 ELF,`CGO_ENABLED=0`)和 `web/dist/`。
+
+### 3. 部署启动
+
+将构建产物推送到目标服务器, 通过 YAML 配置文件启动:
 
 ```bash
-make build          # 构建后端 + 前端 (当前平台)
-make build-linux    # 交叉编译 Linux amd64 (部署用)
-make dev            # 提示开发启动命令
-make check          # 格式化 + 静态检查
+# 控制面
+./deepsea-server -config config/server.yaml
+
+# Agent
+./deepsea-agent -config config/agent.yaml
 ```
+
+完整部署流程(交叉编译、systemd、nginx、批量部署、滚动升级)见 [部署指南](docs/部署指南.md)。
 
 ## 截图
 
@@ -297,71 +307,26 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 
 ## 路线图
 
-- **v0.1** 单节点控制面 + Agent 骨架 ✅
-  
-  - Raft 单节点存储、bbolt 持久化、gRPC 双向流、Agent 心跳、读配置回传
+- **v0.1–v0.4** 基础能力 ✅ — Raft 集群、gRPC Agent、配置比对、自动扫描、扩容迁移、SSH 注入、入口代理
+- **v0.5** 配置文件启动 + 服务器管理 ✅ — YAML 配置、数字自增 ID、SSH 凭据加密、全字段排序检索
+- **v0.5.1–v0.5.3** 安全加固与深度修复 ✅ — 安全配置统一管理、动态扩容、ops 服务节点、12 处遗留问题修复
+- **v0.6.0** 命令执行抽象层 ✅ — Builder + Command + Executor 三层抽象, 跨平台命令执行(systemd/SysVInit/Windows Service)
+- **v0.6.1** 代码结构优化 ✅ — 拆分大文件、清理死代码、消除重复函数、包改名、过时标记清理
 
-- **v0.2** 3 节点 Raft 容错集群 ✅
-  
-  - 控制面 1→3 节点, 动态 AddVoter 加节点, 选举/复制/故障切换
-  - 杀 Leader 后 Follower 秒级当选, 已提交数据不丢
+<details>
+<summary>历史版本详情</summary>
 
-- **v0.3** Java 运维 MVP + 安全鉴权 ✅
-  
-  - M1 登录鉴权 (JWT + bcrypt + 限流)
-  - M2 三路配置比对 (Nacos / 本地 / jar)
-  - M3 Agent 自动扫描 (Java/Python 项目识别 + 进程检测 + 生效配置合并)
-  - M4 配置自动发现增强 (选 Agent → 选项目 → 自动填充 → 比对)
-  - M5 扩容迁移编排 (jar 分发 + 配置写入 + 进程启停)
-  - M6 拓扑可视化 (AntV G6)
+- **v0.1** 单节点控制面 + Agent 骨架
+- **v0.2** 3 节点 Raft 容错集群
+- **v0.3** Java 运维 MVP + 安全鉴权 (登录/配置比对/自动扫描/扩容迁移/拓扑可视化)
+- **v0.4** 自动部署 + 入口代理 (SSH 凭据加密、SSH 自动注入、入口代理)
+- **v0.5** 配置文件启动 + 服务器管理重构
+- **v0.5.1** 安全配置纳入配置文件
+- **v0.5.2** 动态扩容 + ops 服务节点 + 自动扫描
+- **v0.5.3** 深度代码审查修复 12 处遗留问题
+- **v0.6.0** Agent 命令执行抽象层
 
-- **v0.4** 自动部署 + 入口代理 ✅
-  
-  - SSH 凭据加密存储 (AES-GCM)
-  - SSH 自动注入 (推送二进制 + systemd, Raft 节点自动 join, Agent 自动连 Leader)
-  - 入口代理 (任意节点 IP 可访问 UI, 写请求转发 Leader, 读请求本地)
-  - 深度代码审查, 修复 17 处缺陷
-
-- **v0.5** 配置文件启动 + 服务器管理重构 ✅
-  
-  - YAML 配置文件启动 (参考 Kafka / ES, `-config` 指定路径, 默认 `config/server.yaml`)
-  - 服务器模型重构: ID 改为数字自增, 新增 OS 类型 (Linux/Windows, 默认 Linux)
-  - 服务器导入支持 SSH 用户名/密码, 可测试连接状态
-  - 服务器列表支持全字段排序 + 全字段模糊检索
-  - 清理无用文档和脚本
-
-- **v0.5.1** 安全配置纳入配置文件 ✅
-  
-  - `server.yaml` 新增 `security` 段: `jwt_secret` / `admin_password` / `master_key`
-  - 配置优先级: 环境变量 > YAML 配置 > 内置默认值
-  - 多节点 Raft 集群一致性校验: `jwt_secret` 和 `master_key` 必须所有节点一致
-  - 启动时安全配置校验与警告 (默认值/未设置/join 模式强警告)
-  - `crypto` 和 `auth` 包改为显式初始化, 消除隐式环境变量依赖
-
-- **v0.5.2** 动态扩容 + ops 服务节点 + 自动扫描 ✅
-  
-  - 服务器列表直接触发 raft/agent 注入 (用 Server 表 SSH 密码, 不再依赖 credentialId)
-  - Raft 节点数量安全校验 (后端硬校验 3-7 范围 + 前端实时预览)
-  - 「Agent 节点」菜单改名为「ops 服务节点」, 整合 raft/agent 状态 + 项目扫描 + 配置管理
-  - 后台自动扫描调度器 (每 10 分钟扫描所有在线 Agent)
-  - 扫描后自动触发配置比对 (从 effectiveConfig 提取 Nacos 地址)
-  - 注入前校验目标服务器 OS (仅支持 Linux)
-  - 深度代码审查, 修复 raft 校验逻辑/ops-nodes 状态/前端预填等 5 处问题
-
-- **v0.5.3** 深度代码审查修复 12 处遗留问题 ✅
-  
-  - SSH shell 注入防护: 路径安全校验 + shellQuote 转义 + 二进制文件名白名单
-  - SSH 命令超时保护: RunCommandTimeout 防止 goroutine 泄漏 (默认 60s, 可配置)
-  - SSH HostKey 校验: 支持配置主机公钥, 未配置时打印一次警告
-  - 优雅关闭: 替换 log.Fatal 为信号监听 + http.Server.Shutdown, defer 链正常执行
-  - Follower GET 转发: /api/agents 和 /api/ops-nodes 的 GET 请求转发到 Leader (Agent 只连 Leader)
-  - 服务器更新原子化: UpdServerFields 在 FSM 中读-改-写原子完成, 消除竞态
-  - Raft voter 数量 TOCTOU: AddVoter 前做最终校验, 缩小竞态窗口
-  - 扫描并发互斥: per-agent sync.Mutex + TryLock, 防止后台与手动扫描并发覆盖
-  - 配置比对持久化: 比对结果存入 ProjectRecord.ConfigDiffJSON, 前端直接展示
-  - Nacos 认证参数: 从 effectiveConfig 提取 username/password/accessToken/namespace
-  - raft.Leader 常量: 替换硬编码 "Leader" 字符串
-  - 错误日志化: FSM Snapshot/Restore/ClearAgentProjects 中的静默错误改为日志输出
+</details>
 
 - **后续**
   

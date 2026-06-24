@@ -181,7 +181,7 @@ func (s *Server) removeAgent(c *agentConn) {
 }
 
 // handleHeartbeat 更新 Agent 的最后心跳时间。
-// 后续可在此处理 CPU/内存等指标(M4 之后的扩展点)。
+// 后续可在此处理 CPU/内存等指标(扩展点)。
 func (s *Server) handleHeartbeat(c *agentConn, hb *pb.Heartbeat) {
 	s.mu.Lock()
 	c.lastSeen = time.Now()
@@ -207,147 +207,24 @@ func (s *Server) handleResult(r *pb.CommandResult) {
 }
 
 // ReadConfig 向指定 Agent 下发"读取配置文件"指令, 阻塞等待结果。
-//
-// 流程:
-//   1. 生成唯一 commandID, 创建结果等待通道
-//   2. 通过 Agent 的 send 通道下发 READ_CONFIG 指令
-//   3. 阻塞等待 Agent 回传结果(带超时)
-//   4. defer 兜底清理: 无论成功失败都从 results map 移除通道
-//
 // 供 HTTP API 的 POST /api/agents/{id}/read-config 调用。
 func (s *Server) ReadConfig(agentID, path string, timeout time.Duration) (string, error) {
-	s.mu.RLock()
-	c, ok := s.agents[agentID]
-	s.mu.RUnlock()
-	if !ok {
-		return "", fmt.Errorf("agent %s 不在线", agentID)
-	}
-
-	cmdID := uuid.NewString()
-	ch := make(chan *pb.CommandResult, 1)
-	s.mu.Lock()
-	s.results[cmdID] = ch
-	s.mu.Unlock()
-	// 兜底清理: 超时或完成后移除通道, 防止内存泄漏
-	defer func() {
-		s.mu.Lock()
-		delete(s.results, cmdID)
-		s.mu.Unlock()
-	}()
-
-	// 构造指令并下发
-	cmd := &pb.Command{
-		CommandId: cmdID,
-		Type:      "READ_CONFIG",
-		Params:    map[string]string{"path": path},
-	}
-	select {
-	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
-	case <-c.done:
-		return "", fmt.Errorf("agent %s 已断开", agentID)
-	case <-time.After(timeout):
-		return "", fmt.Errorf("下发指令超时")
-	}
-
-	// 等待 Agent 回传结果
-	select {
-	case r := <-ch:
-		if !r.Success {
-			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
-		}
-		return r.Output, nil
-	case <-time.After(timeout):
-		return "", fmt.Errorf("等待结果超时")
-	}
+	params := map[string]string{"path": path}
+	return s.SendCommand(agentID, "READ_CONFIG", params, timeout)
 }
+
 // CollectConfigs 向指定 Agent 下发配置采集指令, 阻塞等待结果(带超时)。
 // 供 HTTP API 调用。返回 Agent 回传的采集快照 JSON。
 func (s *Server) CollectConfigs(agentID string, params map[string]string, timeout time.Duration) (string, error) {
-	s.mu.RLock()
-	c, ok := s.agents[agentID]
-	s.mu.RUnlock()
-	if !ok {
-		return "", fmt.Errorf("agent %s 不在线", agentID)
-	}
-
-	cmdID := uuid.NewString()
-	ch := make(chan *pb.CommandResult, 1)
-	s.mu.Lock()
-	s.results[cmdID] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.results, cmdID)
-		s.mu.Unlock()
-	}()
-
-	cmd := &pb.Command{
-		CommandId: cmdID,
-		Type:      "COLLECT_CONFIGS",
-		Params:    params,
-	}
-	select {
-	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
-	case <-c.done:
-		return "", fmt.Errorf("agent %s 已断开", agentID)
-	case <-time.After(timeout):
-		return "", fmt.Errorf("下发采集指令超时")
-	}
-
-	select {
-	case r := <-ch:
-		if !r.Success {
-			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
-		}
-		return r.Output, nil
-	case <-time.After(timeout):
-		return "", fmt.Errorf("等待采集结果超时")
-	}
+	return s.SendCommand(agentID, "COLLECT_CONFIGS", params, timeout)
 }
+
 // ScanProjects 向指定 Agent 下发扫描指令, 阻塞等待结果(带超时)。
 // scanDirs 是逗号分隔的扫描目录列表(如 "/home,/data")。
 // 返回扫描结果 JSON(项目列表 + hosts 内容)。
 func (s *Server) ScanProjects(agentID, scanDirs string, timeout time.Duration) (string, error) {
-	s.mu.RLock()
-	c, ok := s.agents[agentID]
-	s.mu.RUnlock()
-	if !ok {
-		return "", fmt.Errorf("agent %s 不在线", agentID)
-	}
-
-	cmdID := uuid.NewString()
-	ch := make(chan *pb.CommandResult, 1)
-	s.mu.Lock()
-	s.results[cmdID] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.results, cmdID)
-		s.mu.Unlock()
-	}()
-
-	cmd := &pb.Command{
-		CommandId: cmdID,
-		Type:      "SCAN_PROJECTS",
-		Params:    map[string]string{"scanDirs": scanDirs},
-	}
-	select {
-	case c.send <- &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: cmd}}:
-	case <-c.done:
-		return "", fmt.Errorf("agent %s 已断开", agentID)
-	case <-time.After(timeout):
-		return "", fmt.Errorf("下发扫描指令超时")
-	}
-
-	select {
-	case r := <-ch:
-		if !r.Success {
-			return "", fmt.Errorf("agent 执行失败: %s", r.Error)
-		}
-		return r.Output, nil
-	case <-time.After(timeout):
-		return "", fmt.Errorf("等待扫描结果超时")
-	}
+	params := map[string]string{"scanDirs": scanDirs}
+	return s.SendCommand(agentID, "SCAN_PROJECTS", params, timeout)
 }
 
 // SendCommand 通用指令下发: 向指定 Agent 发送任意类型的指令, 阻塞等待结果。

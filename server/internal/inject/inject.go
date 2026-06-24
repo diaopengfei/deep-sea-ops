@@ -1,10 +1,10 @@
-// Package inject 实现 v0.4 自动注入: SSH 推送二进制 + 配置, 远程拉起服务。
+// Package inject 实现自动注入: SSH 推送二进制 + 配置, 远程拉起服务。
 //
 // 两种角色:
 //   - raft: 推送 deepsea-server 二进制, 启动后 Leader 调用 AddVoter 纳入集群
 //   - agent: 推送 deepsea-agent 二进制, 启动后自动连 Leader gRPC
 //
-// v0.6.0 起使用 platform 抽象层:
+// 使用 platform 抽象层:
 //   - SSHExecutor 包装 sshclient.Client, 实现 Executor 接口
 //   - CommandBuilder 按目标平台生成命令(systemd/SysVInit/Windows Service)
 //   - ServiceOps 管理服务安装/启动/停止
@@ -30,7 +30,7 @@ const (
 	RoleAgent Role = "agent" // Agent 工作节点
 )
 
-// SSHConfig 是直接传入的 SSH 连接信息(v0.5.2+, 从 Server 表解密后传入)。
+// SSHConfig 是直接传入的 SSH 连接信息(从 Server 表解密后传入)。
 type SSHConfig struct {
 	Host       string // 目标服务器 IP
 	Port       int    // SSH 端口
@@ -45,7 +45,7 @@ type InjectRequest struct {
 	//   - CredentialID 非空时从 Raft 读取 SSH 凭据
 	//   - CredentialID 为空时用 SSHConfig
 	CredentialID string     // SSH 凭据 ID(存在 Raft 里, 兼容旧 API)
-	SSH          *SSHConfig // 直接传入 SSH 连接信息(v0.5.2+)
+	SSH          *SSHConfig // 直接传入 SSH 连接信息
 
 	Role   Role   // raft / agent
 	NodeID string // 节点 ID(如 node2 / agent-3)
@@ -285,7 +285,7 @@ func installAndStartService(exec platform.Executor, builder platform.CommandBuil
 
 // resolveSSHConfig 从 CredentialID 或 SSHConfig 获取 SSH 连接信息。
 func (inj *Injector) resolveSSHConfig(req InjectRequest) (*sshclient.Config, error) {
-	// v0.5.2+: 直接传入 SSH 配置(从 Server 表解密后传入)
+	// 直接传入 SSH 配置(从 Server 表解密后传入)
 	if req.SSH != nil {
 		return &sshclient.Config{
 			Host:       req.SSH.Host,

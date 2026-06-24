@@ -373,13 +373,3 @@ func (svc *Service) Login(username, password string) (*LoginResponse, error) {
 func (svc *Service) AllowLogin(username string) bool {
 	return svc.limiter.Allow(username)
 }
-
-// RecordLoginFail 记录一次登录失败。
-func (svc *Service) RecordLoginFail(username string) {
-	svc.limiter.RecordFail(username)
-}
-
-// RecordLoginSuccess 记录登录成功, 清零失败计数。
-func (svc *Service) RecordLoginSuccess(username string) {
-	svc.limiter.RecordSuccess(username)
-}

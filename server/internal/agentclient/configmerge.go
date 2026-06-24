@@ -208,9 +208,9 @@ func flattenProperties(content string) map[string]string {
 	return result
 }
 
-// extractNacosAddr 从配置项里提取 Nacos 服务器地址。
+// ExtractNacosAddr 从配置项里提取 Nacos 服务器地址。
 // Spring Cloud Nacos 配置通常在 spring.cloud.nacos.config.server-addr 或 discovery.server-addr。
-func extractNacosAddr(configs map[string]string) string {
+func ExtractNacosAddr(configs map[string]string) string {
 	keys := []string{
 		"spring.cloud.nacos.config.server-addr",
 		"spring.cloud.nacos.discovery.server-addr",

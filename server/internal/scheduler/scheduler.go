@@ -1,13 +1,13 @@
-// Package scanner 实现后台自动扫描调度器。
+// Package scheduler 实现后台自动扫描调度器。
 //
-// v0.5.2: 每 10 分钟对所有在线 Agent 下发 SCAN_PROJECTS 指令,
+// 每 10 分钟对所有在线 Agent 下发 SCAN_PROJECTS 指令,
 // 扫描完成后自动触发配置比对(对 Spring 项目),
 // 结果持久化到 Raft 供前端查询。
 //
-// v0.5.3: 增加 per-agent 互斥锁, 防止后台扫描与手动扫描并发竞态;
+// 增加 per-agent 互斥锁, 防止后台扫描与手动扫描并发竞态;
 // 配置比对结果持久化到 ProjectRecord.ConfigDiffJSON;
 // 从 effectiveConfig 提取 Nacos 认证参数(username/password/accessToken)。
-package scanner
+package scheduler
 
 import (
 	"encoding/json"
@@ -31,7 +31,7 @@ type Scheduler struct {
 	stopOnce sync.Once
 
 	// per-agent 互斥锁, 防止后台扫描与手动扫描并发执行导致数据覆盖
-	agentMu   sync.Map // map[string]*sync.Mutex
+	agentMu sync.Map // map[string]*sync.Mutex
 }
 
 // NewScheduler 创建扫描调度器。interval 为扫描周期, 建议 10 分钟。
@@ -105,7 +105,7 @@ func (sc *Scheduler) scanAll() {
 }
 
 // scanAgent 对单个 Agent 执行扫描 + 配置比对。
-// v0.5.3: 用 per-agent 互斥锁防止与手动扫描并发。
+// 用 per-agent 互斥锁防止与手动扫描并发。
 func (sc *Scheduler) scanAgent(agentID string) {
 	mu := sc.getAgentMu(agentID)
 	if !mu.TryLock() {
@@ -166,11 +166,12 @@ func (sc *Scheduler) scanAgent(agentID string) {
 }
 
 // autoConfigDiff 对单个项目自动执行配置比对。
-// v0.5.3: 从 effectiveConfig 提取 Nacos 认证参数(username/password/accessToken),
+// 从 effectiveConfig 提取 Nacos 认证参数(username/password/accessToken),
 // 比对结果持久化到 ProjectRecord.ConfigDiffJSON 供前端查询。
 func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
-	// 从 effectiveConfig 提取 Nacos 地址
-	nacosAddr := extractNacosAddr(p.EffectiveConfig)
+	// 从 effectiveConfig 提取 Nacos 地址(复用 agentclient.ExtractNacosAddr)
+	kv := effectiveConfigToKV(p.EffectiveConfig)
+	nacosAddr := agentclient.ExtractNacosAddr(kv)
 	if nacosAddr == "" {
 		log.Printf("[扫描调度器] Agent %s 项目 %s 未找到 Nacos 地址, 跳过配置比对", agentID, p.Name)
 		return
@@ -182,7 +183,7 @@ func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
 		localPath = p.ConfigFiles[0]
 	}
 
-	// v0.5.3: 提取 Nacos 认证参数(从 effectiveConfig)
+	// 提取 Nacos 认证参数(从 effectiveConfig)
 	params := map[string]string{
 		"nacosAddr":        nacosAddr,
 		"nacosDataId":      extractNacosConfig(p.EffectiveConfig, "spring.application.name") + ".yml",
@@ -208,7 +209,7 @@ func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
 	log.Printf("[扫描调度器] Agent %s 项目 %s 配置比对完成: 一致 %d, 差异 %d",
 		agentID, p.Name, len(report.Consistent), diffCount)
 
-	// v0.5.3: 持久化比对结果到 Raft, 供前端查询
+	// 持久化比对结果到 Raft, 供前端查询
 	reportJSON, err := json.Marshal(report)
 	if err != nil {
 		log.Printf("[扫描调度器] Agent %s 项目 %s 序列化比对结果失败: %v", agentID, p.Name, err)
@@ -225,23 +226,16 @@ func (sc *Scheduler) autoConfigDiff(agentID string, p agentclient.ProjectInfo) {
 	}
 }
 
-// extractNacosAddr 从 effectiveConfig 中提取 Nacos 地址。
-func extractNacosAddr(ec *agentclient.EffectiveConfig) string {
+// effectiveConfigToKV 把 EffectiveConfig.Items 转成 map[string]string, 供按 key 查找。
+func effectiveConfigToKV(ec *agentclient.EffectiveConfig) map[string]string {
+	kv := make(map[string]string)
 	if ec == nil {
-		return ""
+		return kv
 	}
-	// 尝试常见的 Nacos 配置 key
-	keys := []string{
-		"spring.cloud.nacos.config.server-addr",
-		"spring.cloud.nacos.discovery.server-addr",
-		"spring.cloud.nacos.server-addr",
+	for _, item := range ec.Items {
+		kv[item.Key] = item.Value
 	}
-	for _, k := range keys {
-		if v := findConfigValue(ec, k); v != "" {
-			return v
-		}
-	}
-	return ""
+	return kv
 }
 
 // extractNacosConfig 从 effectiveConfig 中提取指定 key 的值。

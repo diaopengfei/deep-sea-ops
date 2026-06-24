@@ -275,9 +275,9 @@ func buildEffectiveConfig(p *ProjectInfo) *EffectiveConfig {
 	}
 
 	// 2. 从本地配置提取 Nacos 地址
-	// 先展平成 KV, 再用 extractNacosAddr 查找
+	// 先展平成 KV, 再用 ExtractNacosAddr 查找
 	localKV := flattenConfig(localText, "yml")
-	nacosAddr := extractNacosAddr(localKV)
+	nacosAddr := ExtractNacosAddr(localKV)
 
 	// 同时提取 dataId / group(如果有自定义配置)
 	nacosDataID := localKV["spring.cloud.nacos.config.data-id"]

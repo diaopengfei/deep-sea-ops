@@ -48,15 +48,14 @@ type ConfigDiffUpdate struct {
 const (
 	opAddServer          = "add_server"
 	opUpdServer          = "upd_server"
-	opUpdServerFields    = "upd_server_fields" // v0.5.3: 原子部分更新, 解决读-改-写竞态
+	opUpdServerFields    = "upd_server_fields" // 原子部分更新, 解决读-改-写竞态
 	opDelServer          = "del_server"
 	opAddUser            = "add_user"
 	opAddProject         = "add_project"
-	opDelProject         = "del_project"
 	opClearAgentProjects = "clear_agent_projects"
 	opAddDeployTask      = "add_deploy_task"
 	opUpdDeployTask      = "upd_deploy_task"
 	opAddCredential      = "add_credential"
 	opDelCredential      = "del_credential"
-	opSetConfigDiff      = "set_config_diff" // v0.5.3: 持久化配置比对结果
+	opSetConfigDiff      = "set_config_diff" // 持久化配置比对结果
 )

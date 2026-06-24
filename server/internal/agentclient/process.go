@@ -15,16 +15,15 @@ type RunningProcess struct {
 	CmdLine string `json:"cmdLine"`
 }
 
-// 全局 PlatformInfo 和 Ops, Agent 启动时初始化一次。
+// 全局 Ops, Agent 启动时初始化一次。
 var (
-	globalPlatform platform.PlatformInfo
-	globalOps      *ops.Ops
+	globalOps *ops.Ops
 )
 
 // InitPlatform 初始化平台抽象层, Agent 启动时调用一次。
 func InitPlatform() {
-	globalPlatform = platform.DetectPlatform()
-	globalOps = ops.NewOps(globalPlatform, platform.NewLocalExecutor())
+	pi := platform.DetectPlatform()
+	globalOps = ops.NewOps(pi, platform.NewLocalExecutor())
 }
 
 // ListProcesses 获取当前运行的进程列表。

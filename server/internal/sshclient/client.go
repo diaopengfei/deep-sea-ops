@@ -1,4 +1,4 @@
-// Package sshclient 提供 SSH 远程操作能力, 用于 v0.4 自动注入。
+// Package sshclient 提供 SSH 远程操作能力, 用于自动注入。
 //
 // 功能: 用存储的 SSH 凭据(已解密)连接目标服务器, 上传二进制文件, 执行远程命令。
 // 用于: SSH 推送 deepsea-agent/deepsea-server 二进制 + 配置, 远程拉起 systemd。
@@ -10,11 +10,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/deepsea-ops/server/internal/shellutil"
 )
 
 // 默认命令执行超时
@@ -145,34 +146,15 @@ func (c *Client) RunCommandTimeout(cmd string, timeout time.Duration) (string, e
 	}
 }
 
-// shellQuote 对路径做 shell 单引号转义, 防止注入。
-// 单引号内的内容不被 shell 解释, 只需处理单引号本身: ' → '\''
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-// safePath 检查路径是否安全(不含 shell 元字符的路径形式)。
-// 允许: 字母/数字/._-/:
-// 拒绝: ; & | ` $ ( ) < > \n 等
-func safePath(p string) error {
-	for _, r := range p {
-		switch r {
-		case ';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r':
-			return fmt.Errorf("路径包含不安全字符 %q: %s", r, p)
-		}
-	}
-	return nil
-}
-
 // UploadFile 通过 SCP 协议上传本地文件到远程服务器。
 // remotePath 是远程目标路径(含文件名), 会自动创建父目录。
 func (c *Client) UploadFile(localPath, remotePath string) error {
-	if err := safePath(remotePath); err != nil {
+	if err := shellutil.SafePath(remotePath); err != nil {
 		return fmt.Errorf("远程路径不安全: %w", err)
 	}
 	remoteDir := filepath.Dir(remotePath)
 	if remoteDir != "." && remoteDir != "/" {
-		if _, err := c.RunCommand("mkdir -p " + shellQuote(remoteDir)); err != nil {
+		if _, err := c.RunCommand("mkdir -p " + shellutil.Quote(remoteDir)); err != nil {
 			return fmt.Errorf("创建远程目录失败: %w", err)
 		}
 	}
@@ -203,8 +185,8 @@ func (c *Client) UploadFile(localPath, remotePath string) error {
 		w.Write([]byte{0})
 	}()
 
-	// 远程用 scp -t 接收, 路径用 shellQuote 转义
-	if err := session.Run("scp -t " + shellQuote(remoteDir)); err != nil {
+	// 远程用 scp -t 接收, 路径用 shellutil.Quote 转义
+	if err := session.Run("scp -t " + shellutil.Quote(remoteDir)); err != nil {
 		return fmt.Errorf("SCP 上传失败: %w", err)
 	}
 	return nil
@@ -212,12 +194,12 @@ func (c *Client) UploadFile(localPath, remotePath string) error {
 
 // UploadContent 把内存内容作为文件上传到远程服务器。
 func (c *Client) UploadContent(content []byte, remotePath string) error {
-	if err := safePath(remotePath); err != nil {
+	if err := shellutil.SafePath(remotePath); err != nil {
 		return fmt.Errorf("远程路径不安全: %w", err)
 	}
 	remoteDir := filepath.Dir(remotePath)
 	if remoteDir != "." && remoteDir != "/" {
-		if _, err := c.RunCommand("mkdir -p " + shellQuote(remoteDir)); err != nil {
+		if _, err := c.RunCommand("mkdir -p " + shellutil.Quote(remoteDir)); err != nil {
 			return fmt.Errorf("创建远程目录失败: %w", err)
 		}
 	}
@@ -240,7 +222,7 @@ func (c *Client) UploadContent(content []byte, remotePath string) error {
 		w.Write([]byte{0})
 	}()
 
-	if err := session.Run("scp -t " + shellQuote(remoteDir)); err != nil {
+	if err := session.Run("scp -t " + shellutil.Quote(remoteDir)); err != nil {
 		return fmt.Errorf("SCP 上传失败: %w", err)
 	}
 	return nil

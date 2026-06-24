@@ -190,10 +190,3 @@ func snapshotToJSON(s ConfigSnapshot) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
-
-// snapshotFromJSON 从 CommandResult.Output 解析回采集结果(控制面端用)。
-func snapshotFromJSON(s string) (ConfigSnapshot, error) {
-	var snap ConfigSnapshot
-	err := json.Unmarshal([]byte(s), &snap)
-	return snap, err
-}

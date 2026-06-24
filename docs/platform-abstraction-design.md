@@ -1,7 +1,7 @@
 # Agent 命令执行抽象层设计
 
-> 版本: v0.6.0
-> 状态: 设计已批准, 分批实现中
+> 版本: v0.6.0 (v0.6.1 结构优化)
+> 状态: 已实现
 > 日期: 2026-06-25
 
 ## 一、背景与目标
@@ -362,23 +362,23 @@ func NewOps(p PlatformInfo, exec Executor) *Ops {
 
 ```
 server/internal/
-├── platform/                  # 新增: 平台抽象层
+├── platform/                  # 平台抽象层
 │   ├── platform.go            # PlatformInfo + DetectPlatform()
-│   ├── command.go             # Command 结构体 + ProcessSignal 类型
+│   ├── builder.go             # CommandBuilder 接口 + 工厂 + Command 结构体 + ProcessSignal 类型
 │   ├── executor.go            # Executor 接口 + LocalExecutor
 │   ├── ssh_executor.go       # SSHExecutor(包装 sshclient.Client)
-│   ├── builder.go            # CommandBuilder 接口 + 工厂
 │   ├── linux_systemd.go      # LinuxSystemdBuilder
 │   ├── linux_sysvinit.go     # LinuxSysVInitBuilder
 │   ├── windows.go            # WindowsBuilder
 │   ├── macos.go              # MacOSBuilder
 │   └── ops/                  # Domain Ops 接口与实现
-│       ├── ops.go            # Ops 结构体 + NewOps 工厂
+│       ├── ops.go            # Ops 结构体 + NewOps 工厂 + ScanOps(v0.6.1 合并)
 │       ├── process.go        # ProcessOps 接口 + 实现 + 解析器
 │       ├── file.go           # FileOps
 │       ├── service.go        # ServiceOps
-│       ├── deploy.go         # DeployOps
-│       └── scan.go           # ScanOps
+│       └── deploy.go         # DeployOps
+├── shellutil/                 # v0.6.1 新增: 公共 shell 工具(Quote/SafePath), 被 platform 和 sshclient 共享
+│   └── shellutil.go
 ```
 
 ## 八、分批迁移计划
@@ -419,7 +419,7 @@ Executor 返回的 `exitCode` 非 0 时, 调用方根据错误类型判断:
 1. **Builder 无状态, Executor 有状态**: Builder 只生成 Command, 不执行, 可全局单例; Executor 持有连接(SSH)或无状态(Local), 按需创建
 2. **Command 结构体统一表示**: 本地 `exec.Command` 和远程 SSH 命令都从 Command 转换, 消除 `fmt.Sprintf` 拼接
 3. **简单文件操作走 os 标准库**: `os.ReadFile`/`os.WriteFile` 本身跨平台, 不走 Executor, 避免进程开销
-4. **shellQuote/safePath 合并**: 统一到 platform 包, inject.go 和 sshclient.go 的重复定义删除
+4. **shellQuote/safePath 合并**: v0.6.1 起统一到独立的 `shellutil` 包(避免 platform 与 sshclient 互相依赖), inject.go 和 sshclient.go 的重复定义删除
 5. **向后兼容**: 迁移期间旧代码与新抽象层并存, 每批迁移后删除对应旧代码
 6. **PlatformInfo 启动时检测一次**: 运行中切换系统需重启 Agent(可接受, 服务器不会动态切换 OS)
 
