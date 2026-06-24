@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="deepsea-ops">
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0e4d7a"/>
+      <stop offset="60%" stop-color="#073454"/>
+      <stop offset="100%" stop-color="#031f38"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.55">
+      <stop offset="0%" stop-color="#1c6fa8" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#1c6fa8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="anchorShade" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1a1a"/>
+      <stop offset="50%" stop-color="#000000"/>
+      <stop offset="100%" stop-color="#2a2a2a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 深海背景圆角方块 -->
+  <rect width="64" height="64" rx="12" fill="url(#sea)"/>
+  <!-- 锚后方辉光 -->
+  <ellipse cx="32" cy="32" rx="26" ry="24" fill="url(#glow)"/>
+
+  <!-- 船锚 (黑色, 斜置 20°, 与 banner 一致) -->
+  <g transform="translate(32 32) rotate(20)" fill="url(#anchorShade)" stroke="#000" stroke-width="1.2" stroke-linejoin="round">
+    <!-- 顶部圆环 -->
+    <circle cx="0" cy="-19" r="3.2" fill="none" stroke-width="1.8"/>
+    <!-- 锚干 (竖杆) -->
+    <rect x="-1.4" y="-15.8" width="2.8" height="30" rx="0.6"/>
+    <!-- 锚横杆 (stock) -->
+    <rect x="-9.6" y="-12" width="19.2" height="2.2" rx="0.6"/>
+    <!-- 横杆两端装饰 -->
+    <rect x="-10.8" y="-12.6" width="1.6" height="3.4" rx="0.4"/>
+    <rect x="9.2"  y="-12.6" width="1.6" height="3.4" rx="0.4"/>
+    <!-- 锚冠 (crown, 底部连接点) -->
+    <circle cx="0" cy="14.4" r="1.8"/>
+    <!-- 左锚臂 (fluke) -->
+    <path d="M 0 14.4
+             Q -3.6 14.4 -7.6 12
+             Q -12.4 9.2 -14 3.6
+             Q -14.8 0.8 -12.8 -0.4
+             Q -11.2 -1.2 -10 0.8
+             Q -8.8 3.6 -7.2 6
+             Q -4.4 9.6 -1.2 10
+             Z"/>
+    <!-- 左锚爪尖 -->
+    <polygon points="-14,3.6 -16.4,1.6 -13.2,0.4"/>
+    <!-- 右锚臂 (fluke) -->
+    <path d="M 0 14.4
+             Q 3.6 14.4 7.6 12
+             Q 12.4 9.2 14 3.6
+             Q 14.8 0.8 12.8 -0.4
+             Q 11.2 -1.2 10 0.8
+             Q 8.8 3.6 7.2 6
+             Q 4.4 9.6 1.2 10
+             Z"/>
+    <!-- 右锚爪尖 -->
+    <polygon points="14,3.6 16.4,1.6 13.2,0.4"/>
+  </g>
+</svg>

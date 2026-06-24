@@ -5,7 +5,7 @@
   <el-container v-else class="layout">
     <el-aside width="210px" class="sidebar">
       <div class="brand">
-        <el-icon :size="22" color="#409eff"><Monitor /></el-icon>
+        <img src="/favicon.svg" alt="logo" class="brand-logo" />
         <span class="brand-name">deepsea-ops</span>
       </div>
       <el-menu :default-active="activeMenu" class="nav">
@@ -51,7 +51,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Monitor, Coin, Connection, Share, SwitchButton, Promotion, Key } from '@element-plus/icons-vue'
+import { Coin, Connection, Share, SwitchButton, Promotion, Key } from '@element-plus/icons-vue'
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import OpsNodeListView from './views/OpsNodeListView.vue'
@@ -99,6 +99,7 @@ function onLogout() {
 .layout { height: 100vh; }
 .sidebar { background: #304156; display: flex; flex-direction: column; }
 .brand { display: flex; align-items: center; gap: 8px; padding: 16px; color: #fff; font-size: 16px; font-weight: 600; }
+.brand-logo { width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; }
 .brand-name { letter-spacing: 0.5px; }
 .nav { border-right: none; background: transparent; }
 :deep(.nav .el-menu-item) { color: #bfcbd9; }
