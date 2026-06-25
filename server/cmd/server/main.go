@@ -94,7 +94,8 @@ func main() {
 	defer scanScheduler.Stop()
 
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
-	handler := api.New(storeInstance, grpcSrv, authSvc)
+	// 传入 scanScheduler, 部署成功后自动触发目标 Agent 扫描
+	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler)
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: handler,

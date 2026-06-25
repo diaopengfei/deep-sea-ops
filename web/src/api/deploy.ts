@@ -40,19 +40,3 @@ export async function createDeployTask(req: CreateDeployTaskReq): Promise<Deploy
   const res = await http.post<DeployTask>('/deploy-tasks', req)
   return res.data
 }
-
-// deployToAgent: 直接对指定 Agent 下发部署指令
-export async function deployToAgent(agentId: string, params: {
-  jarPath: string
-  configText: string
-  projectName: string
-}): Promise<{ output: string }> {
-  const res = await http.post(`agents/${agentId}/deploy`, params)
-  return res.data
-}
-
-// stopProject: 停止指定 Agent 上的项目
-export async function stopProject(agentId: string, projectPath: string): Promise<{ output: string }> {
-  const res = await http.post(`agents/${agentId}/stop-project`, { projectPath })
-  return res.data
-}

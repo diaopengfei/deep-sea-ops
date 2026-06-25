@@ -57,6 +57,13 @@ func (sc *Scheduler) Stop() {
 	})
 }
 
+// ScanAgentNow 立即对指定 Agent 执行一次扫描 + 配置比对。
+// 用于部署任务成功后的事件触发, 不等 10 分钟周期。
+// 内部复用 scanAgent 的 per-agent 互斥锁, 若该 Agent 正在扫描则跳过。
+func (sc *Scheduler) ScanAgentNow(agentID string) {
+	go sc.scanAgent(agentID)
+}
+
 // getAgentMu 获取(或创建)指定 Agent 的互斥锁。
 // 同一 Agent 的扫描串行执行, 不同 Agent 并行, 兼顾安全与效率。
 func (sc *Scheduler) getAgentMu(agentID string) *sync.Mutex {

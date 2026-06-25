@@ -2,17 +2,21 @@ package api
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"strings"
 
 	"github.com/deepsea-ops/server/internal/auth"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/model"
+	"github.com/deepsea-ops/server/internal/scheduler"
 	"github.com/deepsea-ops/server/internal/store"
+	"github.com/deepsea-ops/server/internal/webassets"
 )
 
-// New 构造 HTTP 路由, 注入 store、grpcServer 和 auth 服务。
-func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
+// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务和扫描调度器。
+// sc 可为 nil(开发环境不联动扫描), 非 nil 时部署成功后自动触发目标 Agent 扫描。
+func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler) http.Handler {
 	mux := http.NewServeMux()
 
 	// --- 白名单路由(无需登录) ---
@@ -172,7 +176,7 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
 			}
 			auth.WriteJSON(w, http.StatusOK, tasks)
 		case http.MethodPost:
-			handleCreateDeployTask(w, r, s, gs)
+			handleCreateDeployTask(w, r, s, gs, sc)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -245,7 +249,32 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service) http.Handler {
 	// 入口代理: 非 Leader 节点把写请求转发给 Leader, 任意节点 IP 可访问 UI
 	handler := withLeaderProxy(mux, s)
 
-	return handler
+	// 前端静态文件(embed 单二进制): 非 /api/ 路径从嵌入的 web/dist/ 提供服务。
+	// 开发环境未构建前端时 dist 为占位文件, 走 vite dev server。
+	return withStaticFiles(handler, webassets.FS())
+}
+
+// withStaticFiles 在 /api/ 之外的路径上提供前端静态文件服务 (SPA 模式)。
+// 已注册的 /api/ 路由优先; 其余路径尝试从静态文件系统读取, 找不到则回退 index.html。
+func withStaticFiles(apiHandler http.Handler, assets fs.FS) http.Handler {
+	if assets == nil {
+		return apiHandler
+	}
+	fileServer := http.FileServer(http.FS(assets))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		// 检查静态文件是否存在, 不存在则回退到 index.html (SPA 路由)
+		if _, err := fs.Stat(assets, strings.TrimPrefix(r.URL.Path, "/")); err != nil {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			fileServer.ServeHTTP(w, r2)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // handleClusterJoin 处理集群加入请求。

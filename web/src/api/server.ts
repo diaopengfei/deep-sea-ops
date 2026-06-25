@@ -65,11 +65,6 @@ export async function deleteServer(id: number): Promise<void> {
   await http.delete(`/servers/${id}`)
 }
 
-export async function updateServer(id: number, s: Partial<AddServerRequest> & { status?: string }): Promise<Server> {
-  const res = await http.put<Server>(`/servers/${id}`, s)
-  return res.data
-}
-
 // SSH 连接测试请求
 export interface TestConnectionRequest {
   ip: string
@@ -99,18 +94,6 @@ export interface AgentInfo {
 
 export async function listAgents(): Promise<AgentInfo[]> {
   const res = await http.get<AgentInfo[]>('/agents')
-  return res.data
-}
-
-export interface ReadConfigResult {
-  agentId: string
-  path: string
-  content: string
-  error?: string
-}
-
-export async function readAgentConfig(agentId: string, path: string): Promise<ReadConfigResult> {
-  const res = await http.post<ReadConfigResult>(`/agents/${agentId}/read-config`, { path })
   return res.data
 }
 

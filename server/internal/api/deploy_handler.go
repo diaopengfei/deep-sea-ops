@@ -11,6 +11,7 @@ import (
 	"github.com/deepsea-ops/server/internal/auth"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/model"
+	"github.com/deepsea-ops/server/internal/scheduler"
 	"github.com/deepsea-ops/server/internal/store"
 )
 
@@ -18,7 +19,8 @@ import (
 
 // handleCreateDeployTask 创建部署任务并下发到目标 Agent 执行。
 // 流程: 创建任务(Raft 持久化) → 下发 DEPLOY 指令到目标 Agent → 更新任务状态
-func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Store, gs *grpcserver.Server) {
+// 部署成功后若 sc 非 nil, 自动触发目标 Agent 的单次扫描(事件驱动, 不等 10 分钟周期)。
+func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Store, gs *grpcserver.Server, sc *scheduler.Scheduler) {
 	var req struct {
 		Type        string `json:"type"` // scale_out / migrate
 		ProjectPath string `json:"projectPath"`
@@ -57,13 +59,14 @@ func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Sto
 	}
 
 	// 异步执行部署: 下发 DEPLOY 指令到目标 Agent
-	go executeDeployTask(s, gs, task)
+	go executeDeployTask(s, gs, sc, task)
 
 	auth.WriteJSON(w, http.StatusOK, task)
 }
 
 // executeDeployTask 异步执行部署任务: 下发指令到 Agent, 更新状态。
-func executeDeployTask(s *store.Store, gs *grpcserver.Server, task model.DeployTask) {
+// 部署成功后触发目标 Agent 的单次扫描(若 sc 非 nil), 让新部署的项目立即出现在扫描结果中。
+func executeDeployTask(s *store.Store, gs *grpcserver.Server, sc *scheduler.Scheduler, task model.DeployTask) {
 	// 标记为运行中
 	task.Status = model.DeployStatusRunning
 	task.UpdatedAt = time.Now()
@@ -94,6 +97,10 @@ func executeDeployTask(s *store.Store, gs *grpcserver.Server, task model.DeployT
 		task.Status = model.DeployStatusSuccess
 		task.Error = ""
 		log.Printf("部署任务 %s 成功: %s", task.ID, output)
+		// 部署成功后立即触发目标 Agent 扫描, 让新项目即时出现在 ops 节点视图
+		if sc != nil {
+			sc.ScanAgentNow(task.TargetAgentID)
+		}
 	}
 	task.UpdatedAt = time.Now()
 	if err := s.UpdDeployTask(task); err != nil {

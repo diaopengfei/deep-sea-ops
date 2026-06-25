@@ -134,15 +134,52 @@
         :closable="false"
         style="margin-bottom: 8px"
       />
-      <!-- 差异分类展示 -->
-      <el-table :data="configItems" style="width: 100%" empty-text="等待后台自动比对(每 10 分钟)">
-        <el-table-column prop="category" label="差异类别" width="220" />
-        <el-table-column label="配置行" min-width="500">
-          <template #default="{ row }">
-            <div v-for="(line, i) in row.lines" :key="i" class="config-line">{{ line }}</div>
-          </template>
-        </el-table-column>
-      </el-table>
+      <!-- 差异展示: v0.6.2 起默认展示键值级语义差异, 可切换行级差异 -->
+      <el-tabs v-model="configActiveTab">
+        <el-tab-pane label="键值差异" name="semantic">
+          <el-table
+            :data="configSemantic"
+            style="width: 100%"
+            empty-text="等待后台自动比对(每 10 分钟)或无键值数据"
+            :row-class-name="semanticRowClass"
+            size="small"
+          >
+            <el-table-column prop="key" label="配置项 Key" min-width="180" show-overflow-tooltip />
+            <el-table-column label="Nacos" min-width="160">
+              <template #default="{ row }">
+                <span :class="{ 'val-missing': !row.nacos }">{{ row.nacos || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="本地" min-width="160">
+              <template #default="{ row }">
+                <span :class="{ 'val-missing': !row.local }">{{ row.local || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="Jar" min-width="160">
+              <template #default="{ row }">
+                <span :class="{ 'val-missing': !row.jar }">{{ row.jar || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.consistent ? 'success' : 'warning'">
+                  {{ row.consistent ? '一致' : '不一致' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+        <el-tab-pane label="行级差异" name="lines">
+          <el-table :data="configItems" style="width: 100%" empty-text="无行级差异或等待后台自动比对">
+            <el-table-column prop="category" label="差异类别" width="220" />
+            <el-table-column label="配置行" min-width="500">
+              <template #default="{ row }">
+                <div v-for="(line, i) in row.lines" :key="i" class="config-line">{{ line }}</div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
       <div v-if="configProject && configProject.configFiles && configProject.configFiles.length" class="config-files">
         <div class="config-files-title">涉及的配置文件:</div>
         <el-tag v-for="f in configProject.configFiles" :key="f" size="small" class="config-file-tag">{{ f }}</el-tag>
@@ -238,6 +275,14 @@ function viewRaftDetail(row: OpsNode) {
 
 // --- 配置比对对话框 ---
 // DiffReport 对应后端 configdiff.DiffReport 的 JSON 结构
+interface KeyDiff {
+  key: string
+  nacos?: string
+  local?: string
+  jar?: string
+  consistent: boolean
+}
+
 interface DiffReport {
   nacosErr?: string
   localErr?: string
@@ -249,6 +294,8 @@ interface DiffReport {
   nacosLocal?: string[]
   nacosJar?: string[]
   localJar?: string[]
+  // v0.6.2: 键值级语义差异, 直接展示同一 key 在三路中的值
+  semantic?: KeyDiff[]
 }
 
 interface ConfigDiffItem {
@@ -259,12 +306,17 @@ interface ConfigDiffItem {
 const configDialogVisible = ref(false)
 const configProject = ref<ProjectRecord | null>(null)
 const configItems = ref<ConfigDiffItem[]>([])
+const configSemantic = ref<KeyDiff[]>([])
 const configErrors = ref<{ source: string; msg: string }[]>([])
+const configActiveTab = ref<'semantic' | 'lines'>('semantic')
 
 function openConfigDialog(row: ProjectRecord) {
   configProject.value = row
   configItems.value = []
+  configSemantic.value = []
   configErrors.value = []
+  // 默认优先展示语义差异; 若无语义数据则回退行级
+  configActiveTab.value = 'semantic'
 
   // v0.5.3: 从持久化的 configDiffJson 解析比对结果
   if (row.configDiffJson) {
@@ -274,7 +326,14 @@ function openConfigDialog(row: ProjectRecord) {
       if (report.nacosErr) configErrors.value.push({ source: 'Nacos', msg: report.nacosErr })
       if (report.localErr) configErrors.value.push({ source: '本地', msg: report.localErr })
       if (report.jarErr) configErrors.value.push({ source: 'Jar', msg: report.jarErr })
-      // 按差异类别分组展示
+      // v0.6.2: 语义级差异(键值对比), 优先展示
+      if (report.semantic && report.semantic.length > 0) {
+        configSemantic.value = report.semantic
+      } else {
+        // 无语义数据时回退到行级视图
+        configActiveTab.value = 'lines'
+      }
+      // 按差异类别分组展示(行级)
       const categories: { label: string; lines?: string[] }[] = [
         { label: '三方一致', lines: report.consistent },
         { label: '仅 Nacos 有', lines: report.onlyNacos },
@@ -292,6 +351,11 @@ function openConfigDialog(row: ProjectRecord) {
     }
   }
   configDialogVisible.value = true
+}
+
+// 语义差异行样式: 不一致的行高亮
+function semanticRowClass({ row }: { row: KeyDiff }): string {
+  return row.consistent ? '' : 'row-inconsistent'
 }
 
 onMounted(() => {
@@ -446,5 +510,15 @@ onUnmounted(() => {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* 语义差异: 不一致行底色高亮, 缺失值灰色 */
+:deep(.row-inconsistent) {
+  background: #fdf6ec;
+}
+
+.val-missing {
+  color: #c0c4cc;
+  font-style: italic;
 }
 </style>

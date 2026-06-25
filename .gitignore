@@ -17,6 +17,10 @@ server/raft-data/
 node_modules/
 web/dist/
 
+# 嵌入前端的构建产物(make build 生成, 保留占位 index.html 供 go build)
+server/internal/webassets/dist/*
+!server/internal/webassets/dist/index.html
+
 # 编辑器配置
 .idea/
 .vscode/

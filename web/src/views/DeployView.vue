@@ -125,8 +125,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { listAgents } from '../api/server'
-import { listProjects, type ProjectRecord } from '../api/projects'
+import { listAgents, listProjects, type ProjectRecord } from '../api/server'
 import { listDeployTasks, createDeployTask, type DeployTask } from '../api/deploy'
 import type { AgentInfo } from '../api/types'
 

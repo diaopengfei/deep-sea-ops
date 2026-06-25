@@ -7,12 +7,12 @@
 </p>
 
 <p align="center">
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white" alt="Go" /></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go" /></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3" /></a>
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.6.1-blue" alt="v0.6.1" />
+  <img src="https://img.shields.io/badge/version-v0.6.2-blue" alt="v0.6.2" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -79,7 +79,7 @@
 
 | 层     | 技术                        | 说明                     |
 | ----- | ------------------------- | ---------------------- |
-| 后端语言  | Go 1.22+                  | 单二进制部署, Raft 生态最成熟     |
+| 后端语言  | Go 1.26+                  | 单二进制部署, Raft 生态最成熟     |
 | 一致性   | hashicorp/raft v1.7.3     | Consul / Nomad 同款, 工业级 |
 | 存储    | bbolt (raft-boltdb/v2)    | 嵌入式 KV, Raft FSM 后端    |
 | 通信    | gRPC + protobuf           | 双向流, Agent ↔ 控制面长连接    |
@@ -93,7 +93,7 @@
 
 ### 环境要求
 
-- **Go** 1.22+
+- **Go** 1.26+
 - **Node.js** 18+
 
 ### 1. 开发环境启动
@@ -188,15 +188,18 @@ deepsea-ops/
 │   │   ├── server/              控制面入口 (HTTP + gRPC + Raft)
 │   │   └── agent/               Agent 入口
 │   ├── internal/                私有包 (Go internal 强制封装)
-│   │   ├── model/               领域模型 (Server/User/Project/DeployTask/SSHCredential)
+│   │   ├── model/               领域模型 (Server/User/Project/DeployTask/SSHCredential/OpsNode)
 │   │   ├── store/               Raft 存储层 (FSM/Store/Command, 5 个 bbolt bucket)
-│   │   ├── api/                 HTTP 路由 + 入口代理 (Leader 转发)
+│   │   ├── api/                 HTTP 路由 + handler + 入口代理 (按领域拆分, Leader 转发)
 │   │   ├── grpcserver/          Agent gRPC 连接管理
 │   │   ├── agentclient/         Agent 端逻辑 (连接/扫描/部署/进程检测)
+│   │   ├── scheduler/           后台扫描调度器 (每 10 分钟)
+│   │   ├── platform/            跨平台命令执行抽象层 (Builder + Executor + Ops)
+│   │   ├── shellutil/           公共 shell 工具 (Quote/SafePath)
 │   │   ├── auth/                JWT + bcrypt + 登录限流
 │   │   ├── crypto/              AES-GCM 加密 (SSH 凭据)
 │   │   ├── sshclient/           SSH 远程操作 (连接/上传/命令)
-│   │   ├── inject/              自动注入 (SSH 推送 + systemd)
+│   │   ├── inject/              自动注入 (SSH 推送 + systemd/SysVInit/Windows Service)
 │   │   ├── config/              YAML 配置文件加载
 │   │   ├── configdiff/          三路配置 diff
 │   │   └── proto/agent/         protoc 生成代码
@@ -301,9 +304,11 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 | 文档                              | 内容                                 |
 | ------------------------------- | ---------------------------------- |
 | [架构设计](docs/架构设计.md)            | 项目目标、拓扑选型、技术栈、演进路径                 |
-| [后端代码导读](docs/后端代码导读.md)        | Go 语法速查 + 逐文件解读 + 数据流, 零 Go 基础可读   |
+| [项目能力与演进方向](docs/项目能力与演进方向.md)   | 已实现功能、解决的运维痛点、当前矛盾点、未来开发方向         |
+| [后端代码导读](docs/后端代码导读.md)        | Go 语法速查 + 核心模块解读 + 数据流, 零 Go 基础可读  |
 | [Raft 原理详解](docs/Raft原理详解.md)   | Raft 每个机制的必要性, Leader/多数派/日志/快照/脑裂 |
 | [部署指南](docs/部署指南.md)            | Linux 集群打包、交叉编译、systemd、nginx、升级   |
+| [平台抽象层设计](docs/platform-abstraction-design.md) | Agent 命令执行三层抽象(Builder + Command + Executor)设计 |
 
 ## 路线图
 
@@ -312,6 +317,7 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 - **v0.5.1–v0.5.3** 安全加固与深度修复 ✅ — 安全配置统一管理、动态扩容、ops 服务节点、12 处遗留问题修复
 - **v0.6.0** 命令执行抽象层 ✅ — Builder + Command + Executor 三层抽象, 跨平台命令执行(systemd/SysVInit/Windows Service)
 - **v0.6.1** 代码结构优化 ✅ — 拆分大文件、清理死代码、消除重复函数、包改名、过时标记清理
+- **v0.6.2** 矛盾点收敛 ✅ — 语义级配置 diff、部署后事件触发扫描、Go embed 单二进制、前端遗留代码清理、平台 Builder 单元测试
 
 <details>
 <summary>历史版本详情</summary>

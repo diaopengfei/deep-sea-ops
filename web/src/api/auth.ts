@@ -44,11 +44,3 @@ export async function login(username: string, password: string) {
   localStorage.setItem(USER_KEY, res.data.username)
   return res.data
 }
-
-// 获取当前用户信息: GET /api/auth/me
-export async function getMe() {
-  const res = await axios.get('/api/auth/me', {
-    headers: { Authorization: `Bearer ${getToken()}` }
-  })
-  return res.data
-}
