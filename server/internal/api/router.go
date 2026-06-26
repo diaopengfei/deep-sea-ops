@@ -8,15 +8,17 @@ import (
 
 	"github.com/deepsea-ops/server/internal/auth"
 	"github.com/deepsea-ops/server/internal/grpcserver"
+	"github.com/deepsea-ops/server/internal/metrics"
 	"github.com/deepsea-ops/server/internal/model"
 	"github.com/deepsea-ops/server/internal/scheduler"
 	"github.com/deepsea-ops/server/internal/store"
 	"github.com/deepsea-ops/server/internal/webassets"
 )
 
-// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务和扫描调度器。
+// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器和指标存储。
 // sc 可为 nil(开发环境不联动扫描), 非 nil 时部署成功后自动触发目标 Agent 扫描。
-func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler) http.Handler {
+// ms 可为 nil(未启用监控), 非 nil 时提供指标查询接口。
+func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store) http.Handler {
 	mux := http.NewServeMux()
 
 	// --- 白名单路由(无需登录) ---
@@ -112,21 +114,36 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		}
 	}))
 
-	// Agent 管理 + 读配置 + 配置比对 + 项目扫描
+	// Agent 管理 + 读配置 + 配置比对 + 项目扫描 + 指标查询(v0.6.3)
 	mux.HandleFunc("/api/agents/", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 		parts := strings.Split(path, "/")
-		if len(parts) != 2 {
+		if len(parts) < 2 {
 			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知路径"})
 			return
 		}
 		agentID := parts[0]
 		action := parts[1]
 
+		// v0.6.3: GET 指标查询(metrics / metrics/history)
+		if r.Method == http.MethodGet && action == "metrics" {
+			if ms == nil {
+				auth.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "监控未启用"})
+				return
+			}
+			if len(parts) >= 3 && parts[2] == "history" {
+				handleMetricsHistory(w, r, ms, agentID)
+			} else {
+				handleMetricsLatest(w, r, ms, agentID)
+			}
+			return
+		}
+
+		// 其余为写操作(POST)
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		switch action {
 		case "read-config":
 			handleReadConfig(w, r, gs, agentID)

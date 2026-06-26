@@ -72,9 +72,20 @@
             {{ formatLastSeen(row.lastSeen) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="CPU/内存" width="160">
+          <template #default="{ row }">
+            <span v-if="row.type === 'agent'" class="metric-inline">
+              <span :class="metricLevel(row.cpuPercent)">{{ (row.cpuPercent ?? 0).toFixed(0) }}%</span>
+              /
+              <span :class="metricLevel(row.memPercent)">{{ (row.memPercent ?? 0).toFixed(0) }}%</span>
+            </span>
+            <span v-else class="sub-text">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.type === 'agent'" link type="primary" size="small" @click="openProjectDrawer(row)">查看项目</el-button>
+            <el-button v-if="row.type === 'agent'" link type="success" size="small" @click="openMetricsDialog(row)">监控</el-button>
             <el-button v-else link type="info" size="small" @click="viewRaftDetail(row)">查看详情</el-button>
           </template>
         </el-table-column>
@@ -188,6 +199,9 @@
         <el-button @click="configDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- v0.6.3: 资源监控曲线对话框 -->
+    <MetricsDialog v-model="metricsDialogVisible" :agent-id="metricsAgentId" />
   </div>
 </template>
 
@@ -196,6 +210,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Share, Connection, Monitor, FolderOpened, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import { listOpsNodes, listProjects, type OpsNode, type ProjectRecord } from '../api/server'
+import MetricsDialog from './MetricsDialog.vue'
 
 const opsNodes = ref<OpsNode[]>([])
 const loading = ref(false)
@@ -271,6 +286,22 @@ async function openProjectDrawer(row: OpsNode) {
 // raft 节点详情(暂仅提示)
 function viewRaftDetail(row: OpsNode) {
   ElMessage.info(`Raft 节点 ${row.id} (${row.state || '-'})`)
+}
+
+// v0.6.3: CPU/内存使用率分级着色
+function metricLevel(v?: number): string {
+  if (v == null) return ''
+  if (v >= 90) return 'metric-critical'
+  if (v >= 80) return 'metric-warning'
+  return 'metric-ok'
+}
+
+// v0.6.3: 资源监控对话框
+const metricsDialogVisible = ref(false)
+const metricsAgentId = ref('')
+function openMetricsDialog(row: OpsNode) {
+  metricsAgentId.value = row.id
+  metricsDialogVisible.value = true
 }
 
 // --- 配置比对对话框 ---
@@ -521,4 +552,13 @@ onUnmounted(() => {
   color: #c0c4cc;
   font-style: italic;
 }
+
+/* v0.6.3: CPU/内存分级着色 */
+.metric-inline {
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-ok { color: #67c23a; }
+.metric-warning { color: #e6a23c; font-weight: 600; }
+.metric-critical { color: #f56c6c; font-weight: 600; }
 </style>

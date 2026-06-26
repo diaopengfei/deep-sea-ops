@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/deepsea-ops/server/internal/metrics"
 	pb "github.com/deepsea-ops/server/internal/proto/agent"
 )
 
@@ -27,6 +28,10 @@ type Server struct {
 	mu      sync.RWMutex                         // 保护下面两个 map
 	agents  map[string]*agentConn                // 在线 Agent 注册表, key=agent_id
 	results map[string]chan *pb.CommandResult    // 指令结果等待表, key=command_id
+
+	// metricsStore 存储资源指标(环形缓冲 + 最新值), 可为 nil(未启用监控)。
+	// 心跳的 CPU/内存写入最新值, 完整指标由 monitor 采集器写入。
+	metricsStore *metrics.Store
 }
 
 // agentConn 记录一个在线 Agent 的运行时状态。
@@ -36,6 +41,8 @@ type agentConn struct {
 	hostname string              // Agent 所在主机名
 	ip       string              // Agent 上报的本机 IP
 	lastSeen time.Time           // 最后一次心跳时间, 用于判断是否存活
+	cpu      float64             // 最新 CPU 使用率(心跳上报, 实时卡片用)
+	mem      float64             // 最新内存使用率(心跳上报, 实时卡片用)
 	send     chan *pb.ServerMessage // 下行通道: 控制面向该 Agent 推消息(指令等)
 	done     chan struct{}        // 关闭信号: 连接断开或被新连接替换时关闭, 通知 send goroutine 退出
 }
@@ -48,12 +55,20 @@ func NewServer() *Server {
 	}
 }
 
+// SetMetricsStore 注入指标存储, 启用心跳指标的实时记录。
+// 不调用时 metricsStore 为 nil, 心跳只更新 lastSeen/cpu/mem 到 agentConn(供 ListAgents)。
+func (s *Server) SetMetricsStore(ms *metrics.Store) {
+	s.metricsStore = ms
+}
+
 // AgentInfo 是给 HTTP API 返回的 Agent 信息(精简版, 不含内部通道)。
 type AgentInfo struct {
-	ID       string    `json:"id"`
-	Hostname string    `json:"hostname"`
-	IP       string    `json:"ip"`
-	LastSeen time.Time `json:"lastSeen"`
+	ID         string    `json:"id"`
+	Hostname   string    `json:"hostname"`
+	IP         string    `json:"ip"`
+	LastSeen   time.Time `json:"lastSeen"`
+	CPUPercent float64   `json:"cpuPercent"` // v0.6.3: 实时 CPU 使用率(心跳上报)
+	MemPercent float64   `json:"memPercent"` // v0.6.3: 实时内存使用率(心跳上报)
 }
 
 // ListAgents 返回当前所有在线 Agent 的信息, 供 /api/agents 接口调用。
@@ -65,6 +80,7 @@ func (s *Server) ListAgents() []AgentInfo {
 	for _, c := range s.agents {
 		out = append(out, AgentInfo{
 			ID: c.id, Hostname: c.hostname, IP: c.ip, LastSeen: c.lastSeen,
+			CPUPercent: c.cpu, MemPercent: c.mem,
 		})
 	}
 	return out
@@ -180,12 +196,18 @@ func (s *Server) removeAgent(c *agentConn) {
 	}
 }
 
-// handleHeartbeat 更新 Agent 的最后心跳时间。
-// 后续可在此处理 CPU/内存等指标(扩展点)。
+// handleHeartbeat 更新 Agent 的最后心跳时间和实时 CPU/内存指标。
+// v0.6.3: 心跳的 cpu/mem 写入 agentConn(供 ListAgents 实时卡片)和 metricsStore(供历史曲线最新点)。
 func (s *Server) handleHeartbeat(c *agentConn, hb *pb.Heartbeat) {
 	s.mu.Lock()
 	c.lastSeen = time.Now()
+	c.cpu = hb.CpuPercent
+	c.mem = hb.MemPercent
 	s.mu.Unlock()
+	// 同步到 metricsStore 的最新值(不入环形缓冲, 完整指标由采集器写入)
+	if s.metricsStore != nil {
+		s.metricsStore.SetLatest(c.id, hb.CpuPercent, hb.MemPercent)
+	}
 }
 
 // handleResult 把 Agent 回传的指令结果投递到等待通道。

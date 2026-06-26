@@ -90,6 +90,8 @@ export interface AgentInfo {
   hostname: string
   ip: string
   lastSeen: string
+  cpuPercent?: number  // v0.6.3: 实时 CPU 使用率(心跳上报)
+  memPercent?: number  // v0.6.3: 实时内存使用率(心跳上报)
 }
 
 export async function listAgents(): Promise<AgentInfo[]> {
@@ -124,6 +126,8 @@ export interface OpsNode {
   state: string          // raft: Leader/Follower/Candidate; agent: online
   suffrage?: string      // raft: Voter/Nonvoter
   lastSeen?: number      // unix 秒
+  cpuPercent?: number    // v0.6.3: 实时 CPU 使用率(agent 才有)
+  memPercent?: number    // v0.6.3: 实时内存使用率(agent 才有)
   isLeader?: boolean
   isSelf?: boolean
 }
@@ -169,5 +173,32 @@ export interface ProjectRecord {
 
 export async function listProjects(agentId?: string): Promise<ProjectRecord[]> {
   const res = await http.get<ProjectRecord[]>('/projects', { params: { agentId } })
+  return res.data
+}
+
+// --- v0.6.3: 资源监控指标 ---
+
+export interface MetricsSample {
+  time: string
+  metrics: {
+    timestamp: number
+    cpu: { percent: number }
+    memory: { percent: number; total: number; used: number; available: number }
+    disk: { percent: number; total: number; used: number; free: number; path: string }
+    net: { rxBytesPerSec: number; txBytesPerSec: number }
+    load: { load1: number; load5: number; load15: number }
+    os: string
+  }
+}
+
+// 拉取指定 Agent 的最新指标快照
+export async function getMetricsLatest(agentId: string): Promise<MetricsSample> {
+  const res = await http.get<MetricsSample>(`/agents/${agentId}/metrics`)
+  return res.data
+}
+
+// 拉取指定 Agent 的历史指标时序(供 ECharts 曲线)
+export async function getMetricsHistory(agentId: string): Promise<MetricsSample[]> {
+  const res = await http.get<MetricsSample[]>(`/agents/${agentId}/metrics/history`)
   return res.data
 }

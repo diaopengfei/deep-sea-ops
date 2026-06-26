@@ -21,6 +21,7 @@ type ServerConfig struct {
 	HTTP     ListenConfig   `yaml:"http"`     // HTTP 监听
 	GRPC     ListenConfig   `yaml:"grpc"`     // gRPC 监听
 	Security SecurityConfig `yaml:"security"` // 安全相关配置
+	Monitor  MonitorConfig  `yaml:"monitor"`  // 资源监控与告警(v0.6.3)
 }
 
 // RaftConfig 是 Raft 相关配置。
@@ -48,6 +49,24 @@ type SecurityConfig struct {
 	MasterKey     string `yaml:"master_key"`     // SSH 凭据加密主密钥 (32字节 base64, 留空则开发模式随机生成)
 }
 
+// MonitorConfig 是资源监控与告警配置(v0.6.3)。
+// 采集器定时向在线 Agent 下发 COLLECT_METRICS, 结果存内存环形缓冲;
+// 告警引擎按规则评估, 触发时走 Webhook(钉钉/飞书/企业微信)。
+type MonitorConfig struct {
+	CollectIntervalSec int    `yaml:"collect_interval_sec"` // 采集周期(秒), 默认 30
+	WebhookType        string `yaml:"webhook_type"`         // dingtalk/feishu/wechat/generic, 空则不通知
+	WebhookURL         string `yaml:"webhook_url"`          // Webhook 地址
+	Rules              []MonitorRule `yaml:"rules"`         // 告警规则
+}
+
+// MonitorRule 单条告警规则。
+type MonitorRule struct {
+	Name        string  `yaml:"name"`         // 规则名(唯一)
+	Metric      string  `yaml:"metric"`       // cpu / memory / disk
+	Threshold   float64 `yaml:"threshold"`    // 阈值百分比, 如 80
+	DurationSec int     `yaml:"duration_sec"` // 持续秒数, 如 300(5 分钟)
+}
+
 // AgentConfig 是 Agent(deepsea-agent)的配置。
 type AgentConfig struct {
 	AgentID string `yaml:"agent_id"` // Agent 唯一 ID
@@ -72,6 +91,20 @@ func DefaultServerConfig() ServerConfig {
 		HTTP:     ListenConfig{Addr: ":8080"},
 		GRPC:     ListenConfig{Addr: ":9090"},
 		Security: DefaultSecurityConfig(),
+		Monitor:  DefaultMonitorConfig(),
+	}
+}
+
+// DefaultMonitorConfig 返回监控告警的默认配置。
+// 默认开启 CPU/内存/磁盘 三条规则, Webhook 留空(仅记日志, 不发通知)。
+func DefaultMonitorConfig() MonitorConfig {
+	return MonitorConfig{
+		CollectIntervalSec: 30,
+		Rules: []MonitorRule{
+			{Name: "high-cpu", Metric: "cpu", Threshold: 80, DurationSec: 300},
+			{Name: "high-memory", Metric: "memory", Threshold: 85, DurationSec: 300},
+			{Name: "high-disk", Metric: "disk", Threshold: 90, DurationSec: 300},
+		},
 	}
 }
 
@@ -135,6 +168,10 @@ func LoadServer(path string) (ServerConfig, error) {
 		cfg.Security.AdminPassword = defaultAdminPassword
 	}
 	// MasterKey 留空表示开发模式随机生成, 不回退默认值
+	// 监控采集周期为 0 时用默认值 30s
+	if cfg.Monitor.CollectIntervalSec <= 0 {
+		cfg.Monitor.CollectIntervalSec = 30
+	}
 	// 环境变量覆盖 YAML 配置
 	applySecurityEnvOverrides(&cfg)
 	return cfg, nil

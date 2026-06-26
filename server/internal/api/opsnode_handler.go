@@ -43,12 +43,14 @@ func handleListOpsNodes(w http.ResponseWriter, r *http.Request, s *store.Store, 
 	// agent 节点
 	for _, a := range gs.ListAgents() {
 		nodes = append(nodes, model.OpsNode{
-			Type:     "agent",
-			ID:       a.ID,
-			Hostname: a.Hostname,
-			IP:       a.IP,
-			State:    "online",
-			LastSeen: a.LastSeen.Unix(),
+			Type:       "agent",
+			ID:         a.ID,
+			Hostname:   a.Hostname,
+			IP:         a.IP,
+			State:      "online",
+			LastSeen:   a.LastSeen.Unix(),
+			CPUPercent: a.CPUPercent,
+			MemPercent: a.MemPercent,
 		})
 	}
 

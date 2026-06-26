@@ -42,3 +42,30 @@ security:
   # 留空则开发模式随机生成 (重启后已加密凭据无法解密, 仅限开发)
   # 生成新密钥: openssl rand -base64 32
   master_key: ""
+
+# 资源监控与告警 (v0.6.3+)
+# 采集器定时向在线 Agent 下发 COLLECT_METRICS, 结果存内存环形缓冲(2 小时历史);
+# 告警引擎按规则评估, 持续超阈值达设定时长触发, 走 Webhook 通知。
+monitor:
+  # 采集周期(秒), 默认 30。环形缓冲容量 240 点 ≈ 2 小时
+  collect_interval_sec: 30
+
+  # 告警 Webhook (留空则仅记日志不发通知)
+  # type 支持: dingtalk(钉钉) / feishu(飞书) / wechat(企业微信) / generic(通用 JSON POST)
+  webhook_type: ""
+  webhook_url: ""
+
+  # 告警规则: 持续时长内(基于采样点)指标全部超阈值才触发, 恢复后发 resolved
+  rules:
+    - name: high-cpu
+      metric: cpu        # cpu / memory / disk
+      threshold: 80      # 百分比
+      duration_sec: 300  # 持续 5 分钟
+    - name: high-memory
+      metric: memory
+      threshold: 85
+      duration_sec: 300
+    - name: high-disk
+      metric: disk
+      threshold: 90
+      duration_sec: 300

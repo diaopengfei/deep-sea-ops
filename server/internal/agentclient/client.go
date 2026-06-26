@@ -100,13 +100,15 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) sendHeartbeat() error {
+	// v0.6.3: 采集真实 CPU/内存使用率填入心跳, 控制面用于实时卡片展示
+	m := CollectMetrics()
 	return c.send(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Heartbeat{
 			Heartbeat: &pb.Heartbeat{
 				AgentId:    c.agentID,
 				Timestamp:  time.Now().UnixMilli(),
-				CpuPercent: 0,
-				MemPercent: 0,
+				CpuPercent: m.CPU.Percent,
+				MemPercent: m.Memory.Percent,
 			},
 		},
 	})
@@ -209,6 +211,17 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		} else {
 			result.Success = true
 			result.Output = output
+		}
+	case "COLLECT_METRICS":
+		// v0.6.3: 采集完整资源指标(CPU/内存/磁盘/网络/负载), JSON 回传控制面存环形缓冲
+		m := CollectMetrics()
+		data, merr := json.Marshal(m)
+		if merr != nil {
+			result.Success = false
+			result.Error = "序列化指标失败: " + merr.Error()
+		} else {
+			result.Success = true
+			result.Output = string(data)
 		}
 	default:
 		result.Success = false

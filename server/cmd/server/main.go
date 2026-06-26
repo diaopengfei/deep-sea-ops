@@ -18,6 +18,8 @@ import (
 	"github.com/deepsea-ops/server/internal/config"
 	"github.com/deepsea-ops/server/internal/crypto"
 	"github.com/deepsea-ops/server/internal/grpcserver"
+	"github.com/deepsea-ops/server/internal/metrics"
+	"github.com/deepsea-ops/server/internal/monitor"
 	pb "github.com/deepsea-ops/server/internal/proto/agent"
 	"github.com/deepsea-ops/server/internal/scheduler"
 	"github.com/deepsea-ops/server/internal/store"
@@ -73,6 +75,9 @@ func main() {
 
 	// gRPC 服务端: 供 Agent 连接, 建立双向流上报心跳/接收指令
 	grpcSrv := grpcserver.NewServer()
+	// v0.6.3: 指标存储(内存环形缓冲), 心跳的 CPU/内存写入最新值, 完整指标由采集器写入
+	metricsStore := metrics.NewStore(metrics.DefaultCapacity)
+	grpcSrv.SetMetricsStore(metricsStore)
 	grpcLis, err := net.Listen("tcp", cfg.GRPC.Addr)
 	if err != nil {
 		log.Fatalf("监听 gRPC %s 失败: %v", cfg.GRPC.Addr, err)
@@ -93,9 +98,33 @@ func main() {
 	scanScheduler.Start()
 	defer scanScheduler.Stop()
 
+	// v0.6.3: 资源监控采集器(每 30s 向在线 Agent 采集完整指标, 存环形缓冲)
+	collectInterval := time.Duration(cfg.Monitor.CollectIntervalSec) * time.Second
+	metricsCollector := monitor.NewCollector(grpcSrv, metricsStore, collectInterval, 10*time.Second)
+	metricsCollector.Start()
+	defer metricsCollector.Stop()
+
+	// v0.6.3: 告警引擎(按规则评估指标, 触发走 Webhook; 仅配置 Webhook 时发通知)
+	var alertNotifier monitor.Notifier
+	if cfg.Monitor.WebhookURL != "" {
+		alertNotifier = monitor.NewWebhookNotifier(monitor.WebhookConfig{
+			Type: cfg.Monitor.WebhookType,
+			URL:  cfg.Monitor.WebhookURL,
+		})
+	}
+	alertRules := make([]monitor.Rule, 0, len(cfg.Monitor.Rules))
+	for _, r := range cfg.Monitor.Rules {
+		alertRules = append(alertRules, monitor.Rule{
+			Name: r.Name, Metric: r.Metric, Threshold: r.Threshold, DurationSec: r.DurationSec,
+		})
+	}
+	alertEngine := monitor.NewAlertEngine(metricsStore, alertRules, alertNotifier, collectInterval)
+	alertEngine.Start()
+	defer alertEngine.Stop()
+
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
 	// 传入 scanScheduler, 部署成功后自动触发目标 Agent 扫描
-	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler)
+	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler, metricsStore)
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: handler,
