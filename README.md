@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.6.6-blue" alt="v0.6.6" />
+  <img src="https://img.shields.io/badge/version-v0.6.7-blue" alt="v0.6.7" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -323,6 +323,7 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 - **v0.6.4** 操作审计日志 ✅ — 独立 bbolt 审计存储(不进 Raft)、写操作自动记录、敏感操作标记、操作日志页(筛选/分页)
 - **v0.6.5** 配置中心化与版本管理 ✅ — 配置基准 Raft 持久化、版本历史回滚、一键下发 Agent 本地文件
 - **v0.6.6** Agent 热更新与版本管理 ✅ — Agent 版本号上报、UPGRADE 指令在线下载替换、滚动批量升级、版本兼容性提示
+- **v0.6.7** 更多中间件管理 ✅ — 进程特征识别 Redis/PostgreSQL/MySQL/Kafka/Zookeeper/ES/ClickHouse, MiddlewareOps 扩展点, 前端类型标签分色
 
 <details>
 <summary>历史版本详情</summary>
@@ -341,7 +342,6 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 
 - **后续**
   
-  - 更多中间件管理 (Redis / PostgreSQL / Kafka / ES / ClickHouse)
   - 拓扑可视化增强与故障诊断
   - 多租户与权限分级
   - API 开放与集成

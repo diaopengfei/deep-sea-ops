@@ -152,9 +152,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="name" label="项目名" min-width="150" />
-        <el-table-column label="类型" width="100">
+        <el-table-column label="类型" width="120">
           <template #default="{ row }">
-            <el-tag size="small" type="info">{{ row.type }}</el-tag>
+            <el-tag size="small" :type="projectTypeTag(row.type)">{{ row.type }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="path" label="路径" min-width="200" show-overflow-tooltip />
@@ -346,6 +346,23 @@ function metricLevel(v?: number): string {
   if (v >= 90) return 'metric-critical'
   if (v >= 80) return 'metric-warning'
   return 'metric-ok'
+}
+
+// v0.6.7: 项目/中间件类型标签颜色
+// Java 项目: info(蓝灰); Python: success(绿); 中间件: warning(橙)/danger(红)
+function projectTypeTag(type: string): 'info' | 'success' | 'warning' | 'danger' | 'primary' {
+  const middlewareColors: Record<string, 'warning' | 'danger' | 'primary'> = {
+    redis: 'warning',
+    postgresql: 'primary',
+    mysql: 'primary',
+    kafka: 'danger',
+    zookeeper: 'warning',
+    elasticsearch: 'warning',
+    clickhouse: 'danger',
+  }
+  if (middlewareColors[type]) return middlewareColors[type]
+  if (type === 'python') return 'success'
+  return 'info'
 }
 
 // v0.6.3: 资源监控对话框

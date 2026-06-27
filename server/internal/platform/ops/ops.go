@@ -9,24 +9,26 @@ import (
 
 // Ops 是所有领域操作的聚合体, 调用方持有 *Ops 即可访问全部能力。
 type Ops struct {
-	Process ProcessOps
-	File    FileOps
-	Service ServiceOps
-	Deploy  DeployOps
-	Scan    ScanOps
-	builder platform.CommandBuilder
+	Process    ProcessOps
+	File       FileOps
+	Service    ServiceOps
+	Deploy     DeployOps
+	Scan       ScanOps
+	Middleware MiddlewareOps // v0.6.7: 中间件状态查询(扩展点, 当前供未来指令调用)
+	builder    platform.CommandBuilder
 }
 
 // NewOps 根据 PlatformInfo 和 Executor 创建 Ops 聚合。
 func NewOps(p platform.PlatformInfo, exec platform.Executor) *Ops {
 	builder := platform.NewCommandBuilder(p)
 	return &Ops{
-		Process: newProcessOps(builder, exec),
-		File:    newFileOps(builder, exec),
-		Service: newServiceOps(builder, exec),
-		Deploy:  newDeployOps(builder, exec),
-		Scan:    newScanOps(builder, exec),
-		builder: builder,
+		Process:    newProcessOps(builder, exec),
+		File:       newFileOps(builder, exec),
+		Service:    newServiceOps(builder, exec),
+		Deploy:     newDeployOps(builder, exec),
+		Scan:       newScanOps(builder, exec),
+		Middleware: newMiddlewareOps(builder, exec),
+		builder:    builder,
 	}
 }
 

@@ -12,7 +12,7 @@ type ProjectRecord struct {
 	AgentID    string    `json:"agentId"`    // 项目所在 Agent 的 ID
 	Host       string    `json:"host"`       // Agent 主机名(冗余, 便于展示)
 	Path       string    `json:"path"`       // 项目根目录或 jar 路径
-	Type       string    `json:"type"`       // java-spring / java-jar / python
+	Type       string    `json:"type"`       // java-spring / java-jar / python / redis / postgresql / mysql / kafka / zookeeper / elasticsearch / clickhouse (v0.6.7)
 	Name       string    `json:"name"`       // 项目名(目录名或 jar 文件名)
 	ConfigFiles []string `json:"configFiles"`// 配置文件路径列表
 	JarPath    string    `json:"jarPath"`    // jar 路径(java-jar 类型)

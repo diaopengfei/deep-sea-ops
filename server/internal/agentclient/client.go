@@ -174,7 +174,7 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		result.Success = true
 		result.Output = snapshotToJSON(snap)
 	case "SCAN_PROJECTS":
-		// 扫描节点上的 Java/Python 项目, 并补充进程状态和生效配置
+		// 扫描节点上的 Java/Python 项目 + 中间件进程, 并补充进程状态和生效配置
 		dirsParam := cmd.Params["scanDirs"]
 		if dirsParam == "" {
 			// 通过平台抽象层获取默认扫描目录(自动适配 Linux/Windows)
@@ -182,7 +182,11 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		}
 		scanDirs := strings.Split(dirsParam, ",")
 		scanResult := ScanProjects(scanDirs, 5)
+		// v0.6.7: 追加中间件扫描(基于进程列表识别 Redis/PostgreSQL/Kafka/ES/ClickHouse 等)
+		// 与文件系统扫描结果合并, 复用同一持久化管线(ProjectRecord)
+		scanResult.Projects = append(scanResult.Projects, ScanMiddlewares(ListProcesses())...)
 		// 补充: 进程检测 + 三路配置合并(对 Spring 项目自动采集 Nacos/本地/jar 并合并)
+		// 中间件条目 Running 已为 true, 此处对中间件无效操作(路径匹配不会命中)
 		EnrichScanResult(&scanResult)
 		data, jerr := json.Marshal(scanResult)
 		if jerr != nil {
