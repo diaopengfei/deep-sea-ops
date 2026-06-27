@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.6.4-blue" alt="v0.6.4" />
+  <img src="https://img.shields.io/badge/version-v0.6.5-blue" alt="v0.6.5" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -42,7 +42,7 @@
 - **分布式控制面** — 3 节点 Raft 强一致集群 (hashicorp/raft), 容忍 1 节点故障, 秒级 Leader 切换
 - **Agent 架构** — 每台被管机器跑轻量 Agent, gRPC 双向流长连接, 心跳 + 指令下发
 - **配置文件启动** — 参考 Kafka / ES, 通过 YAML 配置文件启动, 不再依赖命令行参数
-- **配置治理** — 连接 Nacos / 本地配置 / jar 内配置, 三方比对, 基准版本走 Raft 强一致
+- **配置治理** — 连接 Nacos / 本地配置 / jar 内配置, 三方比对, 基准版本走 Raft 强一致, 在线编辑 + 版本回滚 + 一键下发
 - **自动扫描** — Agent 自动扫描 Java Spring / Java jar / Python 项目, 进程检测, 生效配置三路合并
 - **扩容迁移** — Leader 编排部署任务, jar 分发、配置写入、进程启停, 状态实时回传
 - **服务器管理** — 自增 ID, 支持 Linux / Windows 类型, SSH 连接测试, 全字段排序与模糊检索
@@ -72,7 +72,7 @@
 
 | 数据                      | 存放               | 一致性 |
 | ----------------------- | ---------------- | --- |
-| 服务器清单、用户、项目、部署任务、SSH 凭据 | Raft 状态机 (bbolt) | 强一致 |
+| 服务器清单、用户、项目、部署任务、SSH 凭据、配置基准版本 | Raft 状态机 (bbolt) | 强一致 |
 | Agent 实时心跳、负载、进程状态      | Leader 内存        | 弱一致 |
 
 ## 技术栈
@@ -175,6 +175,7 @@ make build-linux    # 交叉编译 Linux amd64 纯静态二进制(部署用)
 | 集群拓扑   | G6 可视化 Raft 节点 + Agent 节点拓扑, Leader/Follower 高亮 |
 | 项目扫描   | Agent 自动扫描 Java/Python 项目, 展示运行状态 + 生效配置        |
 | 配置比对   | Nacos / 本地 / jar 三路配置 git 风格 diff               |
+| 配置基准   | 在线编辑配置基准, 版本历史回滚, 一键下发到 Agent 本地文件 |
 | 扩容迁移   | 创建部署任务, 实时查看执行状态                                |
 | SSH 凭据 | 管理 SSH 连接凭据 (AES-GCM 加密存储)                      |
 | SSH 注入 | 一键推送二进制 + systemd, 自动加入集群                       |
@@ -189,7 +190,7 @@ deepsea-ops/
 │   │   └── agent/               Agent 入口
 │   ├── internal/                私有包 (Go internal 强制封装)
 │   │   ├── model/               领域模型 (Server/User/Project/DeployTask/SSHCredential/OpsNode)
-│   │   ├── store/               Raft 存储层 (FSM/Store/Command, 5 个 bbolt bucket)
+│   │   ├── store/               Raft 存储层 (FSM/Store/Command, 6 个 bbolt bucket)
 │   │   ├── api/                 HTTP 路由 + handler + 入口代理 (按领域拆分, Leader 转发)
 │   │   ├── grpcserver/          Agent gRPC 连接管理
 │   │   ├── agentclient/         Agent 端逻辑 (连接/扫描/部署/进程检测)

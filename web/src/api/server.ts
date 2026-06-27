@@ -169,10 +169,72 @@ export interface ProjectRecord {
   // v0.5.3: 配置比对结果(JSON 字符串, 前端解析展示)
   configDiffJson?: string
   diffScannedAt?: number
+  // v0.6.5: 配置基准版本
+  configBaseline?: string
+  baselineVersion?: number
+  baselineUpdatedAt?: number
+  baselineUpdatedBy?: string
 }
 
 export async function listProjects(agentId?: string): Promise<ProjectRecord[]> {
   const res = await http.get<ProjectRecord[]>('/projects', { params: { agentId } })
+  return res.data
+}
+
+// --- v0.6.5: 配置中心化与版本管理 ---
+
+// projectID 含 "/", 需 encodeURIComponent; 但后端按关键字匹配解析, 这里整体编码
+function projectBase(id: string): string {
+  return `/projects/${encodeURIComponent(id)}`
+}
+
+// 获取项目当前基准配置
+export async function getProjectBaseline(projectId: string): Promise<ProjectRecord> {
+  const res = await http.get<ProjectRecord>(`${projectBase(projectId)}/baseline`)
+  return res.data
+}
+
+// 保存新的配置基准内容(创建新版本)
+export interface SaveBaselineRequest {
+  content: string
+  comment?: string
+}
+
+export async function saveProjectBaseline(projectId: string, req: SaveBaselineRequest): Promise<ProjectRecord> {
+  const res = await http.post<ProjectRecord>(`${projectBase(projectId)}/baseline`, req)
+  return res.data
+}
+
+// 配置基准版本历史
+export interface ConfigVersion {
+  projectId: string
+  version: number
+  content: string
+  updatedBy: string
+  updatedAt: number
+  comment: string
+}
+
+export async function listConfigVersions(projectId: string): Promise<ConfigVersion[]> {
+  const res = await http.get<ConfigVersion[]>(`${projectBase(projectId)}/config-versions`)
+  return res.data
+}
+
+// 回滚到指定版本(创建一个新版本, 内容为目标版本)
+export async function rollbackConfigVersion(projectId: string, version: number): Promise<ProjectRecord> {
+  const res = await http.post<ProjectRecord>(`${projectBase(projectId)}/config-versions/${version}/rollback`)
+  return res.data
+}
+
+// 下发基准配置到 Agent 本地文件
+export interface DeployBaselineResult {
+  status: string
+  path: string
+  output: string
+}
+
+export async function deployProjectBaseline(projectId: string, path?: string): Promise<DeployBaselineResult> {
+  const res = await http.post<DeployBaselineResult>(`${projectBase(projectId)}/deploy-baseline`, { path })
   return res.data
 }
 

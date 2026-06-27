@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,6 +195,57 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			projects = []model.ProjectRecord{}
 		}
 		auth.WriteJSON(w, http.StatusOK, projects)
+	}))
+
+	// v0.6.5: 项目配置基准与版本管理(/api/projects/{id}/baseline 等)
+	// projectID = agentID + "|" + projectPath, 含 "/", 路径解析用关键字匹配
+	mux.HandleFunc("/api/projects/", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/projects/")
+		if rest == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		projectID, parts := parseProjectPath(rest)
+		if projectID == "" || parts == nil || len(parts) == 0 {
+			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知路径"})
+			return
+		}
+		action := parts[0]
+		switch action {
+		case "baseline":
+			switch r.Method {
+			case http.MethodGet:
+				handleGetBaseline(w, r, s, projectID)
+			case http.MethodPost:
+				handleSaveBaseline(w, r, s, projectID)
+			default:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+		case "config-versions":
+			// GET 列出版本历史; POST /{ver}/rollback 回滚到指定版本
+			if r.Method == http.MethodGet {
+				handleListConfigVersions(w, r, s, projectID)
+				return
+			}
+			if r.Method == http.MethodPost && len(parts) >= 3 && parts[2] == "rollback" {
+				ver, err := strconv.Atoi(parts[1])
+				if err != nil {
+					auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "版本号格式错误"})
+					return
+				}
+				handleRollbackBaseline(w, r, s, projectID, ver)
+				return
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case "deploy-baseline":
+			if r.Method == http.MethodPost {
+				handleDeployBaseline(w, r, s, gs, projectID)
+			} else {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+		default:
+			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知操作: " + action})
+		}
 	}))
 
 	// 部署任务

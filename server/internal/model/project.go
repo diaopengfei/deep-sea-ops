@@ -25,6 +25,22 @@ type ProjectRecord struct {
 	// 由后台扫描调度器自动比对后写入, 空表示尚未比对
 	ConfigDiffJSON string `json:"configDiffJson,omitempty"`
 	DiffScannedAt  int64  `json:"diffScannedAt,omitempty"` // 比对时间(unix 毫秒)
+
+	// v0.6.5 配置中心化: 配置基准版本(平台管理的目标配置, 可下发到 Agent 本地文件 / Nacos)
+	ConfigBaseline    string `json:"configBaseline,omitempty"`    // 基准配置内容(YAML/Properties 文本)
+	BaselineVersion   int    `json:"baselineVersion,omitempty"`   // 基准版本号(从 1 递增, 0 表示尚未建立基准)
+	BaselineUpdatedAt int64  `json:"baselineUpdatedAt,omitempty"` // 基准最近更新时间(unix 毫秒)
+	BaselineUpdatedBy string `json:"baselineUpdatedBy,omitempty"` // 基准最近更新人
+}
+
+// ConfigVersion 是配置基准的版本历史快照, 存独立 bucket, 支持回滚到任意版本。
+type ConfigVersion struct {
+	ProjectID  string `json:"projectId"`  // 所属项目 ID
+	Version    int    `json:"version"`    // 版本号
+	Content    string `json:"content"`    // 该版本的配置内容
+	UpdatedBy  string `json:"updatedBy"`  // 提交人
+	UpdatedAt  int64  `json:"updatedAt"`  // 提交时间(unix 毫秒)
+	Comment    string `json:"comment"`    // 版本备注(可选)
 }
 
 // DeployTask 是一次扩容/迁移部署任务。

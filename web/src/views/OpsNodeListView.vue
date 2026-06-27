@@ -119,9 +119,10 @@
             {{ row.configFiles ? row.configFiles.length : 0 }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openConfigDialog(row)">查看配置</el-button>
+            <el-button link type="warning" size="small" @click="openBaselineDialog(row)">配置基准</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -202,6 +203,9 @@
 
     <!-- v0.6.3: 资源监控曲线对话框 -->
     <MetricsDialog v-model="metricsDialogVisible" :agent-id="metricsAgentId" />
+
+    <!-- v0.6.5: 配置基准与版本管理对话框 -->
+    <ConfigBaselineDialog v-model="baselineDialogVisible" :project="baselineProject" @saved="onBaselineSaved" />
   </div>
 </template>
 
@@ -211,6 +215,7 @@ import { ElMessage } from 'element-plus'
 import { Share, Connection, Monitor, FolderOpened, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import { listOpsNodes, listProjects, type OpsNode, type ProjectRecord } from '../api/server'
 import MetricsDialog from './MetricsDialog.vue'
+import ConfigBaselineDialog from './ConfigBaselineDialog.vue'
 
 const opsNodes = ref<OpsNode[]>([])
 const loading = ref(false)
@@ -302,6 +307,25 @@ const metricsAgentId = ref('')
 function openMetricsDialog(row: OpsNode) {
   metricsAgentId.value = row.id
   metricsDialogVisible.value = true
+}
+
+// v0.6.5: 配置基准对话框
+const baselineDialogVisible = ref(false)
+const baselineProject = ref<ProjectRecord | null>(null)
+function openBaselineDialog(row: ProjectRecord) {
+  baselineProject.value = row
+  baselineDialogVisible.value = true
+}
+// 基准保存后刷新抽屉里的项目列表(让版本号等同步)
+async function onBaselineSaved() {
+  if (drawerAgentId.value) {
+    try {
+      const list = await listProjects(drawerAgentId.value)
+      drawerProjects.value = Array.isArray(list) ? list : []
+    } catch {
+      // 忽略, 抽屉数据下次刷新
+    }
+  }
 }
 
 // --- 配置比对对话框 ---

@@ -233,6 +233,29 @@ func (s *Store) SetConfigDiff(upd *ConfigDiffUpdate) error {
 	return s.apply(cmd)
 }
 
+// SetConfigBaseline 提交"保存配置基准版本"命令到 Raft(v0.6.5)。
+// FSM 在同一事务中: 自增版本号 → 更新项目基准字段 → 追加版本历史。
+// 返回 FSM 分配的新版本号。
+func (s *Store) SetConfigBaseline(upd *ConfigBaselineUpdate) error {
+	cmd := command{Op: opSetConfigBaseline, Baseline: upd}
+	return s.apply(cmd)
+}
+
+// ListConfigVersions 列出指定项目的配置基准版本历史(按版本号升序)。
+func (s *Store) ListConfigVersions(projectID string) []model.ConfigVersion {
+	return s.fsm.ListConfigVersions(projectID)
+}
+
+// GetConfigVersion 按 项目ID+版本号 查单条版本历史(回滚时取目标版本内容)。
+func (s *Store) GetConfigVersion(projectID string, version int) (*model.ConfigVersion, bool) {
+	return s.fsm.GetConfigVersion(projectID, version)
+}
+
+// GetProject 按 ID 查单个项目。
+func (s *Store) GetProject(id string) (*model.ProjectRecord, bool) {
+	return s.fsm.GetProject(id)
+}
+
 // --- 部署任务相关 ---
 
 // AddDeployTask 提交"新增部署任务"命令到 Raft。

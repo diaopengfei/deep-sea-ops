@@ -1,12 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/hashicorp/raft"
 	"go.etcd.io/bbolt"
@@ -17,11 +19,12 @@ import (
 // bucket 名字。bbolt 用"桶"组织 KV, 类似命名空间。
 // 一个 bbolt 文件里可以有多个 bucket, 互不干扰。
 var (
-	serversBucket     = []byte("servers")     // 服务器清单
-	usersBucket       = []byte("users")       // 用户账户(登录鉴权)
-	projectsBucket    = []byte("projects")    // 扫描到的项目(持久化)
-	deployTasksBucket = []byte("deploy_tasks") // 部署任务(扩容迁移)
-	credentialsBucket = []byte("credentials") // SSH 凭据
+	serversBucket        = []byte("servers")         // 服务器清单
+	usersBucket          = []byte("users")           // 用户账户(登录鉴权)
+	projectsBucket       = []byte("projects")        // 扫描到的项目(持久化)
+	deployTasksBucket    = []byte("deploy_tasks")    // 部署任务(扩容迁移)
+	credentialsBucket    = []byte("credentials")     // SSH 凭据
+	configVersionsBucket = []byte("config_versions") // v0.6.5 配置基准版本历史
 )
 
 // FSM 是状态机。Raft 负责把命令按顺序可靠地送达, FSM 负责收到命令后真正改状态。
@@ -37,7 +40,7 @@ func NewFSM(dbPath string) (*FSM, error) {
 		return nil, fmt.Errorf("打开 bbolt: %w", err)
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket} {
+		for _, b := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket, configVersionsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -79,6 +82,8 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 			return f.applyClearAgentProjects(tx, cmd.Project.AgentID)
 		case opSetConfigDiff:
 			return f.applySetConfigDiff(tx, cmd.ConfigDiff)
+		case opSetConfigBaseline:
+			return f.applySetConfigBaseline(tx, cmd.Baseline)
 		case opAddDeployTask:
 			return f.applyAddDeployTask(tx, cmd.Task)
 		case opUpdDeployTask:
@@ -334,6 +339,98 @@ func (f *FSM) applySetConfigDiff(tx *bbolt.Tx, upd *ConfigDiffUpdate) error {
 	return b.Put(key, out)
 }
 
+// applySetConfigBaseline 原子更新项目的配置基准版本并追加一条版本历史(v0.6.5)。
+// 在同一个 bbolt 事务中: 读取现有项目 → 自增版本号 → 更新基准字段 → 写回项目 → 追加 ConfigVersion 到历史 bucket。
+// key 设计: projectID + "|" + version, 同一项目的版本历史天然按 key 前缀聚簇且有序。
+func (f *FSM) applySetConfigBaseline(tx *bbolt.Tx, upd *ConfigBaselineUpdate) error {
+	if upd == nil {
+		return fmt.Errorf("ConfigBaselineUpdate 为空")
+	}
+	pb := tx.Bucket(projectsBucket)
+	key := []byte(upd.ProjectID)
+	val := pb.Get(key)
+	if val == nil {
+		return fmt.Errorf("项目不存在: ID=%s", upd.ProjectID)
+	}
+	var p model.ProjectRecord
+	if err := json.Unmarshal(val, &p); err != nil {
+		return fmt.Errorf("反序列化项目失败: %w", err)
+	}
+	// 自增版本号, 0 表示尚未建立基准则从 1 开始
+	p.BaselineVersion++
+	if p.BaselineVersion <= 0 {
+		p.BaselineVersion = 1
+	}
+	p.ConfigBaseline = upd.Content
+	p.BaselineUpdatedAt = time.Now().UnixMilli()
+	p.BaselineUpdatedBy = upd.UpdatedBy
+	out, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	if err := pb.Put(key, out); err != nil {
+		return err
+	}
+	// 追加版本历史快照
+	cv := model.ConfigVersion{
+		ProjectID: upd.ProjectID,
+		Version:   p.BaselineVersion,
+		Content:   upd.Content,
+		UpdatedBy: upd.UpdatedBy,
+		UpdatedAt: p.BaselineUpdatedAt,
+		Comment:   upd.Comment,
+	}
+	cb := tx.Bucket(configVersionsBucket)
+	cvVal, err := json.Marshal(cv)
+	if err != nil {
+		return err
+	}
+	cvKey := upd.ProjectID + "|" + strconv.Itoa(cv.Version)
+	return cb.Put([]byte(cvKey), cvVal)
+}
+
+// ListConfigVersions 列出指定项目的配置基准版本历史(按版本号升序)。
+func (f *FSM) ListConfigVersions(projectID string) []model.ConfigVersion {
+	out := make([]model.ConfigVersion, 0)
+	prefix := []byte(projectID + "|")
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(configVersionsBucket)
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			var cv model.ConfigVersion
+			if err := json.Unmarshal(v, &cv); err == nil {
+				out = append(out, cv)
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Printf("FSM ListConfigVersions 读取失败: %v", err)
+	}
+	return out
+}
+
+// GetConfigVersion 按 项目ID+版本号 查单条版本历史(回滚时取目标版本内容)。
+func (f *FSM) GetConfigVersion(projectID string, version int) (*model.ConfigVersion, bool) {
+	var cv *model.ConfigVersion
+	key := []byte(projectID + "|" + strconv.Itoa(version))
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(configVersionsBucket)
+		val := b.Get(key)
+		if val == nil {
+			return nil
+		}
+		cv = &model.ConfigVersion{}
+		return json.Unmarshal(val, cv)
+	}); err != nil {
+		log.Printf("FSM GetConfigVersion 读取失败: %v", err)
+		return nil, false
+	}
+	if cv == nil {
+		return nil, false
+	}
+	return cv, true
+}
+
 // ListProjects 列出所有项目记录。可选按 agentID 过滤。
 func (f *FSM) ListProjects(agentID string) []model.ProjectRecord {
 	out := make([]model.ProjectRecord, 0)
@@ -487,21 +584,23 @@ func (f *FSM) ListCredentials() []model.SSHCredential {
 // --- Snapshot / Restore ---
 
 type snapshotData struct {
-	Servers     map[string]model.Server
-	Users       map[string]model.User
-	Projects    map[string]model.ProjectRecord
-	DeployTasks map[string]model.DeployTask
-	Credentials map[string]model.SSHCredential
+	Servers         map[string]model.Server
+	Users           map[string]model.User
+	Projects        map[string]model.ProjectRecord
+	DeployTasks     map[string]model.DeployTask
+	Credentials     map[string]model.SSHCredential
+	ConfigVersions  map[string]model.ConfigVersion // v0.6.5 配置基准版本历史
 }
 
 // Snapshot 打包当前状态, 供 Raft 压缩日志和给新节点同步用。
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	data := snapshotData{
-		Servers:     make(map[string]model.Server),
-		Users:       make(map[string]model.User),
-		Projects:    make(map[string]model.ProjectRecord),
-		DeployTasks: make(map[string]model.DeployTask),
-		Credentials: make(map[string]model.SSHCredential),
+		Servers:        make(map[string]model.Server),
+		Users:          make(map[string]model.User),
+		Projects:       make(map[string]model.ProjectRecord),
+		DeployTasks:    make(map[string]model.DeployTask),
+		Credentials:    make(map[string]model.SSHCredential),
+		ConfigVersions: make(map[string]model.ConfigVersion),
 	}
 	if err := f.db.View(func(tx *bbolt.Tx) error {
 		readBucket := func(name []byte, fn func(k, v []byte) error) {
@@ -546,6 +645,13 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 			}
 			return nil
 		})
+		readBucket(configVersionsBucket, func(k, v []byte) error {
+			var cv model.ConfigVersion
+			if err := json.Unmarshal(v, &cv); err == nil {
+				data.ConfigVersions[string(k)] = cv
+			}
+			return nil
+		})
 		return nil
 	}); err != nil {
 		log.Printf("FSM Snapshot 读取失败: %v", err)
@@ -562,7 +668,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	}
 	if err := f.db.Update(func(tx *bbolt.Tx) error {
 		// 逐个 bucket: 删旧重建
-		for _, name := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket} {
+		for _, name := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket, configVersionsBucket} {
 			if err := tx.DeleteBucket(name); err != nil && err != bbolt.ErrBucketNotFound {
 				return err
 			}
@@ -623,6 +729,16 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 						return err
 					}
 				}
+			case map[string]model.ConfigVersion:
+				for id, cv := range m {
+					val, err := json.Marshal(cv)
+					if err != nil {
+						return fmt.Errorf("序列化 ConfigVersion %s 失败: %w", id, err)
+					}
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		}
@@ -641,12 +757,15 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		if err := restoreBucket(credentialsBucket, data.Credentials); err != nil {
 			return err
 		}
+		if err := restoreBucket(configVersionsBucket, data.ConfigVersions); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("写入恢复数据: %w", err)
 	}
-	log.Printf("FSM 从快照恢复: %d 服务器, %d 用户, %d 项目, %d 部署任务, %d 凭据",
-		len(data.Servers), len(data.Users), len(data.Projects), len(data.DeployTasks), len(data.Credentials))
+	log.Printf("FSM 从快照恢复: %d 服务器, %d 用户, %d 项目, %d 部署任务, %d 凭据, %d 配置版本",
+		len(data.Servers), len(data.Users), len(data.Projects), len(data.DeployTasks), len(data.Credentials), len(data.ConfigVersions))
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -222,6 +223,29 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 		} else {
 			result.Success = true
 			result.Output = string(data)
+		}
+	case "WRITE_CONFIG":
+		// v0.6.5: 把控制面下发的配置基准内容写入本地配置文件(下发基准配置)。
+		// params: path(目标文件路径), content(配置内容), backup(可选, "1" 表示先备份原文件)
+		path := cmd.Params["path"]
+		content := cmd.Params["content"]
+		if path == "" {
+			result.Success = false
+			result.Error = "缺少参数 path"
+			break
+		}
+		// 写入前可选备份: 复制原文件为 path.bak.{时间戳}
+		if cmd.Params["backup"] == "1" {
+			if orig, err := os.ReadFile(path); err == nil {
+				_ = os.WriteFile(path+".bak."+strconv.FormatInt(time.Now().Unix(), 10), orig, 0o644)
+			}
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			result.Success = false
+			result.Error = "写入配置文件失败: " + err.Error()
+		} else {
+			result.Success = true
+			result.Output = "已写入 " + path + " (" + strconv.Itoa(len(content)) + " 字节)"
 		}
 	default:
 		result.Success = false

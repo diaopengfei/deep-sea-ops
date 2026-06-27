@@ -22,6 +22,7 @@ type command struct {
 	CredID      string              `json:"credId"`      // 凭据 ID(del_credential 用)
 	Credential  model.SSHCredential `json:"credential"`  // add_credential 时携带
 	ConfigDiff  *ConfigDiffUpdate   `json:"configDiff"`  // set_config_diff 时携带
+	Baseline    *ConfigBaselineUpdate `json:"baseline"`  // set_config_baseline 时携带
 }
 
 // ServerUpdate 是原子部分更新服务器的参数(解决读-改-写竞态)。
@@ -44,6 +45,15 @@ type ConfigDiffUpdate struct {
 	DiffScannedAt int64 `json:"diffScannedAt"` // 比对时间(unix 毫秒)
 }
 
+// ConfigBaselineUpdate 是保存配置基准版本的参数(v0.6.5)。
+// FSM.Apply 中读取现有项目记录, 更新基准字段并自增版本号, 同时追加一条版本历史。
+type ConfigBaselineUpdate struct {
+	ProjectID string `json:"projectId"` // 项目 ID
+	Content   string `json:"content"`   // 基准配置内容
+	UpdatedBy string `json:"updatedBy"` // 提交人(来自 JWT)
+	Comment   string `json:"comment"`   // 版本备注(可选)
+}
+
 // op 常量, 避免到处写字符串字面量(笔误难以排查)。
 const (
 	opAddServer          = "add_server"
@@ -58,4 +68,5 @@ const (
 	opAddCredential      = "add_credential"
 	opDelCredential      = "del_credential"
 	opSetConfigDiff      = "set_config_diff" // 持久化配置比对结果
+	opSetConfigBaseline  = "set_config_baseline" // v0.6.5 保存配置基准版本 + 追加版本历史
 )
