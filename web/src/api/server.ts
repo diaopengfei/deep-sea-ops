@@ -202,3 +202,40 @@ export async function getMetricsHistory(agentId: string): Promise<MetricsSample[
   const res = await http.get<MetricsSample[]>(`/agents/${agentId}/metrics/history`)
   return res.data
 }
+
+// --- v0.6.4: 操作审计日志 ---
+
+export interface AuditLog {
+  id: number
+  timestamp: number       // unix 毫秒
+  username: string
+  role: string
+  method: string
+  path: string
+  action: string          // login/create-server/delete-server/inject/deploy 等
+  target: string
+  status: number
+  ip: string
+  detail: string
+  sensitive: boolean
+}
+
+export interface AuditLogPage {
+  total: number
+  items: AuditLog[]
+}
+
+export interface AuditLogParams {
+  username?: string
+  action?: string
+  target?: string
+  start?: number
+  end?: number
+  offset?: number
+  limit?: number
+}
+
+export async function listAuditLogs(params?: AuditLogParams): Promise<AuditLogPage> {
+  const res = await http.get<AuditLogPage>('/audit-logs', { params })
+  return res.data
+}

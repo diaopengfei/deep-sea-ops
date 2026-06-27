@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
 
 	"github.com/deepsea-ops/server/internal/api"
+	"github.com/deepsea-ops/server/internal/audit"
 	"github.com/deepsea-ops/server/internal/auth"
 	"github.com/deepsea-ops/server/internal/config"
 	"github.com/deepsea-ops/server/internal/crypto"
@@ -63,6 +65,13 @@ func main() {
 
 	// 鉴权服务: 注入 store, 用户数据走 Raft 保证多节点一致
 	authSvc := auth.New(storeInstance)
+
+	// v0.6.4: 操作审计日志(独立 bbolt 文件, 不进 Raft, 追加写)
+	auditStore, err := audit.New(filepath.Join(cfg.Raft.DataDir, "audit.db"))
+	if err != nil {
+		log.Fatalf("打开审计日志库失败: %v", err)
+	}
+	defer auditStore.Close()
 
 	// 初始管理员账号: 首次启动且无 admin 时自动创建
 	// ADMIN_PASSWORD 仅在此处生效, admin 创建后密码 hash 存 Raft 复制到所有节点
@@ -124,7 +133,7 @@ func main() {
 
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
 	// 传入 scanScheduler, 部署成功后自动触发目标 Agent 扫描
-	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler, metricsStore)
+	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler, metricsStore, auditStore)
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: handler,

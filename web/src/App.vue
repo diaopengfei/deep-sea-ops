@@ -24,6 +24,9 @@
         <el-menu-item index="cluster" @click="activeMenu = 'cluster'">
           <el-icon><Share /></el-icon><span>集群拓扑</span>
         </el-menu-item>
+        <el-menu-item index="audit" @click="activeMenu = 'audit'">
+          <el-icon><Document /></el-icon><span>操作日志</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -44,6 +47,7 @@
         <DeployView v-else-if="activeMenu === 'deploy'" />
         <CredentialsView v-else-if="activeMenu === 'credentials'" />
         <ClusterTopologyView v-else-if="activeMenu === 'cluster'" />
+        <AuditLogView v-else-if="activeMenu === 'audit'" />
       </el-main>
     </el-container>
   </el-container>
@@ -51,13 +55,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Coin, Connection, Share, SwitchButton, Promotion, Key } from '@element-plus/icons-vue'
+import { Coin, Connection, Share, SwitchButton, Promotion, Key, Document } from '@element-plus/icons-vue'
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import OpsNodeListView from './views/OpsNodeListView.vue'
 import DeployView from './views/DeployView.vue'
 import CredentialsView from './views/CredentialsView.vue'
 import ClusterTopologyView from './views/ClusterTopologyView.vue'
+import AuditLogView from './views/AuditLogView.vue'
 import { getToken, removeToken, getCurrentUser } from './api/auth'
 
 const isLoggedIn = ref(false)
@@ -71,6 +76,7 @@ const pageTitle = computed(() => {
     deploy: '扩容迁移',
     credentials: 'SSH 凭据',
     cluster: '集群拓扑',
+    audit: '操作日志',
   }
   return map[activeMenu.value] || ''
 })

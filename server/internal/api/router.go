@@ -5,7 +5,9 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/deepsea-ops/server/internal/audit"
 	"github.com/deepsea-ops/server/internal/auth"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/metrics"
@@ -15,10 +17,11 @@ import (
 	"github.com/deepsea-ops/server/internal/webassets"
 )
 
-// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器和指标存储。
+// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器、指标存储和审计存储。
 // sc 可为 nil(开发环境不联动扫描), 非 nil 时部署成功后自动触发目标 Agent 扫描。
 // ms 可为 nil(未启用监控), 非 nil 时提供指标查询接口。
-func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store) http.Handler {
+// aud 可为 nil(未启用审计), 非 nil 时写操作自动记录审计日志。
+func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store, aud *audit.Store) http.Handler {
 	mux := http.NewServeMux()
 
 	// --- 白名单路由(无需登录) ---
@@ -44,19 +47,29 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			return
 		}
 		if !as.AllowLogin(req.Username) {
+			if aud != nil {
+				go aud.Record(audit.Log{Timestamp: time.Now().UnixMilli(), Username: req.Username, Method: r.Method, Path: r.URL.Path, Action: "login-failed", Status: http.StatusTooManyRequests, IP: audit.ClientIP(r)})
+			}
 			auth.WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "尝试过于频繁, 请稍后再试"})
 			return
 		}
 		resp, err := as.Login(req.Username, req.Password)
 		if err != nil {
+			if aud != nil {
+				go aud.Record(audit.Log{Timestamp: time.Now().UnixMilli(), Username: req.Username, Method: r.Method, Path: r.URL.Path, Action: "login-failed", Status: http.StatusUnauthorized, IP: audit.ClientIP(r)})
+			}
 			auth.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
+		}
+		if aud != nil {
+			go aud.Record(audit.Log{Timestamp: time.Now().UnixMilli(), Username: req.Username, Method: r.Method, Path: r.URL.Path, Action: "login", Status: http.StatusOK, IP: audit.ClientIP(r)})
 		}
 		auth.WriteJSON(w, http.StatusOK, resp)
 	})
 
 	// --- 受保护路由(需登录) ---
 	mw := auth.NewMiddleware("/api/login", "/api/healthz")
+	mw.SetAudit(aud) // v0.6.4: 写操作自动记录审计
 
 	mux.HandleFunc("/api/auth/me", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		claims := auth.FromContext(r.Context())
@@ -252,6 +265,15 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			return
 		}
 		handleListOpsNodes(w, r, s, gs)
+	}))
+
+	// v0.6.4: 操作审计日志查询(需登录)
+	mux.HandleFunc("/api/audit-logs", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
+		if aud == nil {
+			auth.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "审计未启用"})
+			return
+		}
+		handleListAuditLogs(w, r, aud)
 	}))
 
 	// 自动注入: SSH 推送二进制 + systemd, 远程拉起节点

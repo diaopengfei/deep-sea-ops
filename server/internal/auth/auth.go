@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/deepsea-ops/server/internal/audit"
 	"github.com/deepsea-ops/server/internal/model"
 
 	"github.com/deepsea-ops/server/internal/store"
@@ -168,8 +169,11 @@ func FromContext(ctx context.Context) *Claims {
 // Middleware 是 HTTP 鉴权中间件。
 // 它从 Authorization 头提取 Bearer token, 校验 JWT, 通过则把 Claims 塞进 ctx。
 // 未通过返回 401。白名单路径(如 /api/login)应绕过此中间件。
+//
+// v0.6.4: 若注入了 audit.Store, 写操作(POST/PUT/DELETE)会在处理完成后异步记录审计日志。
 type Middleware struct {
-	whitelist map[string]bool // 不需要鉴权的路径
+	whitelist map[string]bool   // 不需要鉴权的路径
+	audit     *audit.Store      // 可选, 审计日志存储
 }
 
 // NewMiddleware 创建鉴权中间件, whitelist 里的路径跳过校验。
@@ -180,6 +184,9 @@ func NewMiddleware(whitelist ...string) *Middleware {
 	}
 	return m
 }
+
+// SetAudit 注入审计日志存储。注入后, 受保护路由的写操作会自动记录审计。
+func (m *Middleware) SetAudit(s *audit.Store) { m.audit = s }
 
 // Wrap 包装一个 http.HandlerFunc, 强制鉴权。
 // 用法: mux.HandleFunc("/api/servers", mw.Wrap(handleListServers))
@@ -194,7 +201,28 @@ func (m *Middleware) Wrap(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "未授权: "+err.Error(), http.StatusUnauthorized)
 			return
 		}
-		next(w, r.WithContext(WithUser(r.Context(), claims)))
+		ctx := WithUser(r.Context(), claims)
+
+		// v0.6.4: 写操作记录审计日志(异步, 不阻塞响应)
+		if m.audit != nil && r.Method != http.MethodGet {
+			rec := audit.NewStatusRecorder(w)
+			next.ServeHTTP(rec, r.WithContext(ctx))
+			action, target, sensitive := audit.Classify(r.Method, r.URL.Path)
+			go m.audit.Record(audit.Log{
+				Timestamp: time.Now().UnixMilli(),
+				Username:  claims.Username,
+				Role:      claims.Role,
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Action:    action,
+				Target:    target,
+				Status:    rec.Status,
+				IP:        audit.ClientIP(r),
+				Sensitive: sensitive,
+			})
+			return
+		}
+		next(w, r.WithContext(ctx))
 	}
 }
 

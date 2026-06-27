@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.6.3-blue" alt="v0.6.3" />
+  <img src="https://img.shields.io/badge/version-v0.6.4-blue" alt="v0.6.4" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -319,6 +319,7 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 - **v0.6.1** 代码结构优化 ✅ — 拆分大文件、清理死代码、消除重复函数、包改名、过时标记清理
 - **v0.6.2** 矛盾点收敛 ✅ — 语义级配置 diff、部署后事件触发扫描、Go embed 单二进制、前端遗留代码清理、平台 Builder 单元测试
 - **v0.6.3** 资源监控与告警 ✅ — Agent 指标采集(CPU/内存/磁盘/网络/负载)、内存环形缓冲、ECharts 曲线、阈值告警 Webhook(钉钉/飞书/企业微信)
+- **v0.6.4** 操作审计日志 ✅ — 独立 bbolt 审计存储(不进 Raft)、写操作自动记录、敏感操作标记、操作日志页(筛选/分页)
 
 <details>
 <summary>历史版本详情</summary>
