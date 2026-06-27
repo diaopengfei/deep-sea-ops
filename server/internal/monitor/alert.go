@@ -213,6 +213,27 @@ func (e *AlertEngine) fireNotify(ev AlertEvent) {
 	}()
 }
 
+// FiringAlerts 返回当前处于 firing 状态的告警列表(v0.6.8 拓扑可视化故障诊断用)。
+// 返回每个 Agent 的每条 firing 规则, 供前端拓扑节点红色高亮与下钻展示。
+func (e *AlertEngine) FiringAlerts() []AlertEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]AlertEvent, 0)
+	for agentID, rules := range e.states {
+		for _, st := range rules {
+			if st.firing {
+				out = append(out, AlertEvent{
+					AgentID:  agentID,
+					Status:   "firing",
+					Value:    st.firedValue,
+					FiredAt:  st.firstOverAt,
+				})
+			}
+		}
+	}
+	return out
+}
+
 // metricValue 从 Metrics 取规则关注的指标值(百分比)。
 func metricValue(m agentclient.Metrics, name string) float64 {
 	switch name {

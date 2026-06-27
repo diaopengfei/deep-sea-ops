@@ -44,10 +44,10 @@
 | v0.6.5 | 配置中心化与版本管理 (配置基准 Raft 持久化/版本历史回滚/一键下发 Agent 本地文件) | ✅ |
 | v0.6.6 | Agent 热更新与版本管理 (GET_VERSION 版本上报/UPGRADE 在线下载替换/滚动批量升级/版本兼容性提示) | ✅ |
 | v0.6.7 | 更多中间件管理 (进程特征识别 Redis/PostgreSQL/MySQL/Kafka/Zookeeper/ES/ClickHouse + MiddlewareOps 扩展点 + 前端类型标签分色) | ✅ |
+| v0.6.8 | 拓扑可视化增强与故障诊断 (节点水位染色绿/橙/红 + firing 告警高亮 + 点击下钻详情 + Agent 表 CPU/内存/版本/状态列) | ✅ |
 
 ### 后续规划
 
-- 拓扑可视化增强与故障诊断
 - 多租户与权限分级
 - API 开放与集成
 

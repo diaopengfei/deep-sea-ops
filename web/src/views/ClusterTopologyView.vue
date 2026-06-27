@@ -47,10 +47,53 @@
       <div class="legend">
         <span class="legend-item"><span class="dot dot-leader"></span> Leader</span>
         <span class="legend-item"><span class="dot dot-follower"></span> Follower</span>
-        <span class="legend-item"><span class="dot dot-agent"></span> Agent(在线)</span>
+        <span class="legend-item"><span class="dot dot-agent"></span> Agent(健康)</span>
+        <span class="legend-item"><span class="dot dot-warn"></span> Agent(水位告警)</span>
+        <span class="legend-item"><span class="dot dot-critical"></span> Agent(告警 firing)</span>
         <span class="legend-item"><span class="dot dot-voter"></span> Voter</span>
       </div>
     </div>
+
+    <!-- v0.6.8: 节点下钻详情对话框 -->
+    <el-dialog v-model="detailVisible" :title="detailTitle" width="640px">
+      <div v-if="detailNode" class="detail-content">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="节点 ID">{{ detailNode.id }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ detailNode.kind === 'raft' ? 'Raft 节点' : 'Agent 节点' }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'raft'" label="角色">{{ detailNode.role }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'raft'" label="选举权">{{ detailNode.suffrage }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'raft'" label="Raft 地址">{{ detailNode.address }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'agent'" label="主机名">{{ detailNode.hostname }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'agent'" label="IP">{{ detailNode.ip }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'agent'" label="CPU">{{ (detailNode.cpuPercent ?? 0).toFixed(1) }}%</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'agent'" label="内存">{{ (detailNode.memPercent ?? 0).toFixed(1) }}%</el-descriptions-item>
+          <el-descriptions-item v-if="detailNode.kind === 'agent'" label="版本">{{ detailNode.version || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <div v-if="detailNode.kind === 'agent' && detailAlerts.length > 0" class="detail-alerts">
+          <div class="detail-alerts-title">当前告警 (firing)</div>
+          <el-table :data="detailAlerts" size="small" empty-text="无告警">
+            <el-table-column prop="rule.name" label="规则" min-width="120" />
+            <el-table-column prop="rule.metric" label="指标" width="100" />
+            <el-table-column label="当前值" width="100">
+              <template #default="{ row }">
+                <span class="alert-value">{{ row.value.toFixed(1) }}%</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="触发时间" min-width="160">
+              <template #default="{ row }">
+                {{ formatTime(row.firedAt) }}
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div v-else-if="detailNode.kind === 'agent'" class="detail-alerts">
+          <el-alert type="success" :closable="false" title="无 firing 告警, 节点健康" />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 节点详情表 -->
     <div class="panel" style="margin-top: 16px">
@@ -88,14 +131,27 @@
         <el-table-column prop="id" label="Agent ID" min-width="140" />
         <el-table-column prop="hostname" label="主机名" min-width="160" />
         <el-table-column prop="ip" label="IP" width="160" />
+        <el-table-column label="CPU/内存" width="140">
+          <template #default="{ row }">
+            <span :class="agentMetricClass(row.cpuPercent)">{{ (row.cpuPercent ?? 0).toFixed(0) }}%</span>
+            /
+            <span :class="agentMetricClass(row.memPercent)">{{ (row.memPercent ?? 0).toFixed(0) }}%</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="版本" width="100">
+          <template #default="{ row }">
+            {{ row.version || '-' }}
+          </template>
+        </el-table-column>
         <el-table-column label="最后心跳" width="200">
           <template #default="{ row }">
             {{ formatTime(row.lastSeen) }}
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
-          <template #default>
-            <el-tag size="small" type="success">在线</el-tag>
+          <template #default="{ row }">
+            <el-tag v-if="alerts.some(a => a.agentId === row.id)" size="small" type="danger">告警</el-tag>
+            <el-tag v-else size="small" type="success">在线</el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -160,13 +216,13 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Plus } from '@element-plus/icons-vue'
 import { Graph } from '@antv/g6'
-import { getClusterInfo, type ClusterInfo, listAgents } from '../api/server'
+import { getClusterInfo, listAgents, listFiringAlerts, type ClusterInfo, type AgentInfo, type AlertEvent } from '../api/server'
 import { listCredentials, type SSHCredential } from '../api/credentials'
 import { injectNode, type InjectRole } from '../api/inject'
-import type { AgentInfo } from '../api/types'
 
 const cluster = ref<ClusterInfo | null>(null)
 const agents = ref<AgentInfo[]>([])
+const alerts = ref<AlertEvent[]>([])
 const credentials = ref<SSHCredential[]>([])
 const loading = ref(false)
 const containerRef = ref<HTMLElement | null>(null)
@@ -174,6 +230,15 @@ const injectVisible = ref(false)
 const injecting = ref(false)
 let graph: Graph | null = null
 let timer: number | undefined
+
+// v0.6.8: 节点下钻详情
+const detailVisible = ref(false)
+const detailNode = ref<any>(null)
+const detailTitle = computed(() => detailNode.value ? `节点详情 - ${detailNode.value.id}` : '节点详情')
+const detailAlerts = computed(() => {
+  if (!detailNode.value || detailNode.value.kind !== 'agent') return []
+  return alerts.value.filter((a) => a.agentId === detailNode.value.id)
+})
 
 const injectForm = reactive({
   credentialId: '',
@@ -198,9 +263,15 @@ const raftVoterWarning = computed(() => {
 async function loadAll() {
   loading.value = true
   try {
-    const [ci, ag] = await Promise.all([getClusterInfo(), listAgents()])
+    // v0.6.8: 并发拉取集群信息、Agent 列表、当前 firing 告警
+    const [ci, ag, al] = await Promise.all([
+      getClusterInfo(),
+      listAgents(),
+      listFiringAlerts().catch(() => [] as AlertEvent[]), // 告警未启用时不阻塞拓扑加载
+    ])
     cluster.value = ci
     agents.value = ag
+    alerts.value = al
     await nextTick()
     renderTopology()
   } catch (e: any) {
@@ -208,6 +279,51 @@ async function loadAll() {
   } finally {
     loading.value = false
   }
+}
+
+// v0.6.8: 按 CPU/内存/告警状态给 Agent 节点染色
+// firing 告警 → 红(#f56c6c); CPU/内存 ≥ 80% → 橙(#e6a23c); 否则绿(#67c23a)
+function agentColor(ag: AgentInfo): { fill: string; stroke: string } {
+  const hasAlert = alerts.value.some((a) => a.agentId === ag.id)
+  if (hasAlert) return { fill: '#f56c6c', stroke: '#c45656' }
+  const cpu = ag.cpuPercent ?? 0
+  const mem = ag.memPercent ?? 0
+  if (cpu >= 80 || mem >= 80) return { fill: '#e6a23c', stroke: '#b88230' }
+  return { fill: '#67c23a', stroke: '#529b2e' }
+}
+
+// v0.6.8: 节点 tooltip 文本(HTML, G6 v5 tooltip behavior 用)
+function agentTooltip(ag: AgentInfo): string {
+  const hasAlert = alerts.value.some((a) => a.agentId === ag.id)
+  const cpu = (ag.cpuPercent ?? 0).toFixed(1)
+  const mem = (ag.memPercent ?? 0).toFixed(1)
+  return [
+    `<b>${ag.id}</b>`,
+    `主机: ${ag.hostname || '-'}`,
+    `IP: ${ag.ip || '-'}`,
+    `版本: ${ag.version || '未知'}`,
+    `CPU: ${cpu}% / 内存: ${mem}%`,
+    hasAlert ? '<span style="color:#f56c6c">⚠ 有 firing 告警</span>' : '<span style="color:#67c23a">● 健康</span>',
+  ].join('<br/>')
+}
+
+function raftTooltip(srv: any): string {
+  const isLeader = srv.address === cluster.value?.leader
+  return [
+    `<b>${srv.id}</b>`,
+    `角色: ${isLeader ? 'Leader' : 'Follower'}`,
+    `选举权: ${srv.suffrage}`,
+    `Raft 地址: ${srv.address}`,
+  ].join('<br/>')
+}
+
+// v0.6.8: 表格中 CPU/内存数值的染色 class
+// ≥90% 红, ≥80% 橙, 其余绿
+function agentMetricClass(v?: number): string {
+  if (v == null) return 'metric-ok'
+  if (v >= 90) return 'metric-critical'
+  if (v >= 80) return 'metric-warning'
+  return 'metric-ok'
 }
 
 // renderTopology 用 G6 渲染拓扑图: 上层 Raft 节点, 下层 Agent 节点, 中间连线
@@ -242,10 +358,12 @@ function renderTopology() {
       id: 'raft-' + srv.id,
       data: {
         kind: 'raft',
+        id: srv.id,
         label: srv.id + (isSelf ? '(本机)' : ''),
         role: isLeader ? 'Leader' : 'Follower',
         address: srv.address,
         suffrage: srv.suffrage,
+        tooltip: raftTooltip(srv),
       },
       style: {
         x: raftStartX + i * raftSpacing,
@@ -283,14 +401,27 @@ function renderTopology() {
   const agentStartX = (width - agentSpacing * (agentCount - 1)) / 2
   agents.value.forEach((ag, i) => {
     const nodeId = 'agent-' + ag.id
+    const color = agentColor(ag)
+    const hasAlert = alerts.value.some((a) => a.agentId === ag.id)
     nodes.push({
       id: nodeId,
-      data: { kind: 'agent', label: ag.id, hostname: ag.hostname, ip: ag.ip },
+      data: {
+        kind: 'agent',
+        id: ag.id,
+        label: ag.id,
+        hostname: ag.hostname,
+        ip: ag.ip,
+        cpuPercent: ag.cpuPercent,
+        memPercent: ag.memPercent,
+        version: ag.version,
+        tooltip: agentTooltip(ag),
+      },
       style: {
         x: agentStartX + i * agentSpacing,
         y: agentY,
-        fill: '#67c23a',
-        stroke: '#529b2e',
+        fill: color.fill,
+        stroke: color.stroke,
+        lineWidth: hasAlert ? 3 : 2, // 告警节点加粗边框突出
         labelText: ag.id,
         labelFill: '#fff',
         labelFontSize: 11,
@@ -299,15 +430,15 @@ function renderTopology() {
       },
     })
 
-    // 每个 Agent 连到 Leader 节点
+    // 每个 Agent 连到 Leader 节点; 告警 Agent 用红色边
     const leaderNode = servers.find((s) => s.address === cluster.value!.leader)
     if (leaderNode) {
       edges.push({
         source: 'raft-' + leaderNode.id,
         target: nodeId,
         style: {
-          stroke: '#67c23a',
-          lineWidth: 1.5,
+          stroke: hasAlert ? '#f56c6c' : '#67c23a',
+          lineWidth: hasAlert ? 2 : 1.5,
         },
       })
     }
@@ -339,7 +470,7 @@ function renderTopology() {
         size: (d: any) => d.style?.size || 40,
         fill: (d: any) => d.style?.fill || '#409eff',
         stroke: (d: any) => d.style?.stroke || '#337ecc',
-        lineWidth: 2,
+        lineWidth: (d: any) => d.style?.lineWidth || 2,
         labelText: (d: any) => d.style?.labelText || '',
         labelFill: '#fff',
         labelFontSize: 12,
@@ -356,6 +487,17 @@ function renderTopology() {
       },
     },
     behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
+  })
+
+  // v0.6.8: 节点点击下钻 - 打开详情对话框
+  graph.on('node:click', (evt: any) => {
+    const nodeId = evt.target?.id
+    if (!nodeId || nodeId === 'label-control') return
+    const node = nodes.find((n) => n.id === nodeId)
+    if (node) {
+      detailNode.value = node.data
+      detailVisible.value = true
+    }
   })
 
   graph.render().catch(() => {
@@ -469,5 +611,14 @@ onUnmounted(() => {
 .dot-leader { background: #faad14; }
 .dot-follower { background: #409eff; }
 .dot-agent { background: #67c23a; }
+.dot-warn { background: #e6a23c; }
+.dot-critical { background: #f56c6c; }
 .dot-voter { background: #a0aec0; }
+.detail-content { padding: 0 4px; }
+.detail-alerts { margin-top: 16px; }
+.detail-alerts-title { font-size: 13px; font-weight: 600; color: #f56c6c; margin-bottom: 8px; }
+.alert-value { color: #f56c6c; font-weight: 600; }
+.metric-ok { color: #67c23a; font-weight: 600; }
+.metric-warning { color: #e6a23c; font-weight: 600; }
+.metric-critical { color: #f56c6c; font-weight: 700; }
 </style>

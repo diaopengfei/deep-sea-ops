@@ -13,16 +13,18 @@ import (
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/metrics"
 	"github.com/deepsea-ops/server/internal/model"
+	"github.com/deepsea-ops/server/internal/monitor"
 	"github.com/deepsea-ops/server/internal/scheduler"
 	"github.com/deepsea-ops/server/internal/store"
 	"github.com/deepsea-ops/server/internal/webassets"
 )
 
-// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器、指标存储和审计存储。
+// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器、指标存储、审计存储和告警引擎。
 // sc 可为 nil(开发环境不联动扫描), 非 nil 时部署成功后自动触发目标 Agent 扫描。
 // ms 可为 nil(未启用监控), 非 nil 时提供指标查询接口。
 // aud 可为 nil(未启用审计), 非 nil 时写操作自动记录审计日志。
-func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store, aud *audit.Store) http.Handler {
+// ae 可为 nil(未启用告警), 非 nil 时提供 /api/alerts 接口供拓扑可视化故障诊断(v0.6.8)。
+func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store, aud *audit.Store, ae *monitor.AlertEngine) http.Handler {
 	mux := http.NewServeMux()
 
 	// --- 白名单路由(无需登录) ---
@@ -347,6 +349,23 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			return
 		}
 		handleListAuditLogs(w, r, aud)
+	}))
+
+	// v0.6.8: 当前 firing 告警列表(供拓扑可视化故障诊断染色)
+	mux.HandleFunc("/api/alerts", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
+		if ae == nil {
+			auth.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "告警未启用"})
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		alerts := ae.FiringAlerts()
+		if alerts == nil {
+			alerts = []monitor.AlertEvent{}
+		}
+		auth.WriteJSON(w, http.StatusOK, alerts)
 	}))
 
 	// 自动注入: SSH 推送二进制 + systemd, 远程拉起节点

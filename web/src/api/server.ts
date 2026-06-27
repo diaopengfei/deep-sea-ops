@@ -343,3 +343,20 @@ export async function listAuditLogs(params?: AuditLogParams): Promise<AuditLogPa
   const res = await http.get<AuditLogPage>('/audit-logs', { params })
   return res.data
 }
+
+// --- v0.6.8: 告警状态(供拓扑可视化故障诊断) ---
+
+export interface AlertEvent {
+  agentId: string
+  rule?: { name: string; metric: string; threshold: number; durationSec: number }
+  value: number
+  status: string          // firing / resolved
+  firedAt: string         // ISO 时间
+  resolvedAt?: string
+}
+
+// 拉取当前 firing 告警列表(用于拓扑节点红色高亮)
+export async function listFiringAlerts(): Promise<AlertEvent[]> {
+  const res = await http.get<AlertEvent[]>('/alerts')
+  return res.data
+}
