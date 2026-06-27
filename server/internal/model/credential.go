@@ -16,6 +16,7 @@ type SSHCredential struct {
 	Password    string `json:"password"`    // AES-GCM 加密后的密码密文(base64)
 	PrivateKey  string `json:"privateKey"`  // AES-GCM 加密后的私钥密文(base64)
 	AuthType    string `json:"authType"`    // "password" / "key"
+	Owner       string `json:"owner"`       // v0.6.9: 所有者(创建者 username), 空表示共享
 	CreatedAt   int64  `json:"createdAt"`   // 创建时间
 }
 

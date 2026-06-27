@@ -63,6 +63,7 @@ func handleAddCredential(w http.ResponseWriter, r *http.Request, s *store.Store)
 		Password:   encPassword,
 		PrivateKey: encKey,
 		AuthType:   req.AuthType,
+		Owner:      ownerFromClaims(r), // v0.6.9: 资源归属
 		CreatedAt:  time.Now().Unix(),
 	}
 	if err := s.AddCredential(cred); err != nil {

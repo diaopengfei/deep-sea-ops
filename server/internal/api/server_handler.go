@@ -21,6 +21,15 @@ func handleListServers(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		servers = []model.Server{}
 	}
 
+	// v0.6.9: 非 admin 仅可见 Owner 为空(共享)或属于自己的服务器
+	filtered := servers[:0]
+	for _, srv := range servers {
+		if ownerVisible(r, srv.Owner) {
+			filtered = append(filtered, srv)
+		}
+	}
+	servers = filtered
+
 	// 模糊检索: keyword 匹配 name/ip/username/os/status
 	keyword := strings.ToLower(r.URL.Query().Get("keyword"))
 	if keyword != "" {
@@ -117,6 +126,7 @@ func handleAddServer(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		Username:  req.Username,
 		Password:  encPassword,
 		Status:    "offline",
+		Owner:     ownerFromClaims(r), // v0.6.9: 资源归属
 		CreatedAt: time.Now().UnixMilli(),
 	}
 

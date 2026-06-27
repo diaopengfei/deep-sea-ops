@@ -31,6 +31,7 @@ type ProjectRecord struct {
 	BaselineVersion   int    `json:"baselineVersion,omitempty"`   // 基准版本号(从 1 递增, 0 表示尚未建立基准)
 	BaselineUpdatedAt int64  `json:"baselineUpdatedAt,omitempty"` // 基准最近更新时间(unix 毫秒)
 	BaselineUpdatedBy string `json:"baselineUpdatedBy,omitempty"` // 基准最近更新人
+	Owner             string `json:"owner,omitempty"`             // v0.6.9: 所有者(归属 Agent 的注册者), 空表示共享
 }
 
 // ConfigVersion 是配置基准的版本历史快照, 存独立 bucket, 支持回滚到任意版本。
@@ -56,6 +57,7 @@ type DeployTask struct {
 	SourceAgentID string `json:"sourceAgentId"` // 源 Agent(迁移时用)
 	Status     string    `json:"status"`      // pending / running / success / failed
 	Error      string    `json:"error"`       // 失败原因
+	Owner      string    `json:"owner"`       // v0.6.9: 任务发起者 username
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 }

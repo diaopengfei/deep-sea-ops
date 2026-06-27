@@ -76,6 +76,10 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 			return f.applyDelServer(tx, cmd.ServerID)
 		case opAddUser:
 			return f.applyAddUser(tx, cmd.User)
+		case opUpdUser:
+			return f.applyUpdUser(tx, cmd.User) // v0.6.9 修改用户(改密码/角色)
+		case opDelUser:
+			return f.applyDelUser(tx, cmd.User.Username) // v0.6.9 删除用户
 		case opAddProject:
 			return f.applyAddProject(tx, cmd.Project)
 		case opClearAgentProjects:
@@ -278,6 +282,38 @@ func (f *FSM) ListUsers() []model.User {
 		log.Printf("FSM ListUsers 读取失败: %v", err)
 	}
 	return out
+}
+
+// applyUpdUser 修改用户(v0.6.9)。
+// cmd.User 中:Username 为定位键;PasswordHash 非空表示改密码;Role 非空表示改角色。
+// 其余字段(ID/CreatedAt)保持原值不变。
+func (f *FSM) applyUpdUser(tx *bbolt.Tx, u model.User) error {
+	b := tx.Bucket(usersBucket)
+	val := b.Get([]byte(u.Username))
+	if val == nil {
+		return fmt.Errorf("用户不存在: %s", u.Username)
+	}
+	var existing model.User
+	if err := json.Unmarshal(val, &existing); err != nil {
+		return err
+	}
+	if u.PasswordHash != "" {
+		existing.PasswordHash = u.PasswordHash
+	}
+	if u.Role != "" {
+		existing.Role = u.Role
+	}
+	out, err := json.Marshal(existing)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(u.Username), out)
+}
+
+// applyDelUser 删除用户(v0.6.9)。
+func (f *FSM) applyDelUser(tx *bbolt.Tx, username string) error {
+	b := tx.Bucket(usersBucket)
+	return b.Delete([]byte(username))
 }
 
 // --- 项目 ---

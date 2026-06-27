@@ -226,6 +226,35 @@ func (m *Middleware) Wrap(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// WrapWrite 包装 handler, 鉴权 + 要求写权限(v0.6.9)。
+// 仅 admin / operator 可通过, viewer 返回 403。
+func (m *Middleware) WrapWrite(next http.HandlerFunc) http.HandlerFunc {
+	return m.requireRole(m.Wrap(next), model.RoleAdmin, model.RoleOperator)
+}
+
+// WrapAdmin 包装 handler, 鉴权 + 要求管理员权限(v0.6.9)。
+// 仅 admin 可通过, 其他角色返回 403。用于用户管理等敏感操作。
+func (m *Middleware) WrapAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return m.requireRole(m.Wrap(next), model.RoleAdmin)
+}
+
+// requireRole 在已有鉴权基础上追加角色检查。
+// claims 由内层 Wrap 注入到 context; 不满足角色返回 403。
+func (m *Middleware) requireRole(next http.HandlerFunc, roles ...string) http.HandlerFunc {
+	allowed := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		allowed[r] = true
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := FromContext(r.Context())
+		if claims == nil || !allowed[claims.Role] {
+			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "权限不足"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 // extractAndVerify 从请求头提取并校验 token。
 func extractAndVerify(r *http.Request) (*Claims, error) {
 	auth := r.Header.Get("Authorization")

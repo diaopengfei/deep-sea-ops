@@ -85,12 +85,44 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		})
 	}))
 
+	// v0.6.9: 用户管理(admin 专用) — 列出/创建用户
+	mux.HandleFunc("/api/users", mw.WrapAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handleListUsers(w, r, s)
+		case http.MethodPost:
+			handleCreateUser(w, r, s)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// v0.6.9: 用户管理(admin 专用) — 修改/删除指定用户
+	mux.HandleFunc("/api/users/", mw.WrapAdmin(func(w http.ResponseWriter, r *http.Request) {
+		username := strings.TrimPrefix(r.URL.Path, "/api/users/")
+		if username == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			handleUpdateUser(w, r, s, username)
+		case http.MethodDelete:
+			handleDeleteUser(w, r, s, as, username)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+
 	// 服务器管理
 	mux.HandleFunc("/api/servers", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			handleListServers(w, r, s)
 		case http.MethodPost:
+			if denyViewer(w, r) {
+				return
+			}
 			handleAddServer(w, r, s)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -106,6 +138,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		}
 		if path == "test-connection" {
 			if r.Method == http.MethodPost {
+				if denyViewer(w, r) {
+					return
+				}
 				handleTestConnection(w, r)
 				return
 			}
@@ -116,6 +151,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		parts := strings.SplitN(path, "/", 2)
 		if len(parts) == 2 && parts[1] == "inject" {
 			if r.Method == http.MethodPost {
+				if denyViewer(w, r) {
+					return
+				}
 				handleInjectFromServer(w, r, s, parts[0])
 				return
 			}
@@ -125,8 +163,14 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		// /api/servers/{id}
 		switch r.Method {
 		case http.MethodDelete:
+			if denyViewer(w, r) {
+				return
+			}
 			handleDeleteServer(w, r, s, path)
 		case http.MethodPut:
+			if denyViewer(w, r) {
+				return
+			}
 			handleUpdateServer(w, r, s, path)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -140,6 +184,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		// v0.6.6: 批量滚动升级 POST /api/agents/upgrade { agentIds, url, checksum, waitSeconds }
 		if len(parts) == 1 && parts[0] == "upgrade" {
 			if r.Method == http.MethodPost {
+				if denyViewer(w, r) {
+					return
+				}
 				handleBatchUpgradeAgents(w, r, gs)
 			} else {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -176,6 +223,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		// 其余为写操作(POST)
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if denyViewer(w, r) { // v0.6.9: viewer 不可执行 Agent 写操作
 			return
 		}
 		switch action {
@@ -217,7 +267,14 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		if projects == nil {
 			projects = []model.ProjectRecord{}
 		}
-		auth.WriteJSON(w, http.StatusOK, projects)
+		// v0.6.9: 非 admin 仅可见 Owner 为空(共享)或属于自己的项目
+		filtered := projects[:0]
+		for _, p := range projects {
+			if ownerVisible(r, p.Owner) {
+				filtered = append(filtered, p)
+			}
+		}
+		auth.WriteJSON(w, http.StatusOK, filtered)
 	}))
 
 	// v0.6.5: 项目配置基准与版本管理(/api/projects/{id}/baseline 等)
@@ -240,6 +297,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			case http.MethodGet:
 				handleGetBaseline(w, r, s, projectID)
 			case http.MethodPost:
+				if denyViewer(w, r) {
+					return
+				}
 				handleSaveBaseline(w, r, s, projectID)
 			default:
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -251,6 +311,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 				return
 			}
 			if r.Method == http.MethodPost && len(parts) >= 3 && parts[2] == "rollback" {
+				if denyViewer(w, r) {
+					return
+				}
 				ver, err := strconv.Atoi(parts[1])
 				if err != nil {
 					auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "版本号格式错误"})
@@ -262,6 +325,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		case "deploy-baseline":
 			if r.Method == http.MethodPost {
+				if denyViewer(w, r) {
+					return
+				}
 				handleDeployBaseline(w, r, s, gs, projectID)
 			} else {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -279,8 +345,18 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			if tasks == nil {
 				tasks = []model.DeployTask{}
 			}
-			auth.WriteJSON(w, http.StatusOK, tasks)
+			// v0.6.9: 非 admin 仅可见自己发起的或共享的部署任务
+			filtered := tasks[:0]
+			for _, t := range tasks {
+				if ownerVisible(r, t.Owner) {
+					filtered = append(filtered, t)
+				}
+			}
+			auth.WriteJSON(w, http.StatusOK, filtered)
 		case http.MethodPost:
+			if denyViewer(w, r) {
+				return
+			}
 			handleCreateDeployTask(w, r, s, gs, sc)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -295,8 +371,18 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			if creds == nil {
 				creds = []model.SSHCredential{}
 			}
-			auth.WriteJSON(w, http.StatusOK, creds)
+			// v0.6.9: 非 admin 仅可见自己创建的或共享的凭据
+			filtered := creds[:0]
+			for _, c := range creds {
+				if ownerVisible(r, c.Owner) {
+					filtered = append(filtered, c)
+				}
+			}
+			auth.WriteJSON(w, http.StatusOK, filtered)
 		case http.MethodPost:
+			if denyViewer(w, r) {
+				return
+			}
 			handleAddCredential(w, r, s)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -305,6 +391,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 
 	mux.HandleFunc("/api/credentials/", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
+			if denyViewer(w, r) {
+				return
+			}
 			id := strings.TrimPrefix(r.URL.Path, "/api/credentials/")
 			if id == "" {
 				auth.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少凭据 ID"})
@@ -325,6 +414,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		path := strings.TrimPrefix(r.URL.Path, "/api/cluster/")
 		switch path {
 		case "join":
+			if denyViewer(w, r) {
+				return
+			}
 			handleClusterJoin(w, r, s)
 		case "info":
 			auth.WriteJSON(w, http.StatusOK, s.ClusterInfo())
@@ -372,6 +464,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 	mux.HandleFunc("/api/inject", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if denyViewer(w, r) {
 			return
 		}
 		handleInject(w, r, s)

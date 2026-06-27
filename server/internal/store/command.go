@@ -61,6 +61,8 @@ const (
 	opUpdServerFields    = "upd_server_fields" // 原子部分更新, 解决读-改-写竞态
 	opDelServer          = "del_server"
 	opAddUser            = "add_user"
+	opUpdUser            = "upd_user" // v0.6.9 修改用户(改密码/改角色)
+	opDelUser            = "del_user" // v0.6.9 删除用户
 	opAddProject         = "add_project"
 	opClearAgentProjects = "clear_agent_projects"
 	opAddDeployTask      = "add_deploy_task"

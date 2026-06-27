@@ -207,6 +207,19 @@ func (s *Store) ListUsers() []model.User {
 	return s.fsm.ListUsers()
 }
 
+// UpdateUser 提交"修改用户"命令到 Raft (v0.6.9)。
+// u.Username 为定位键;PasswordHash 非空改密码;Role 非空改角色。
+func (s *Store) UpdateUser(u model.User) error {
+	cmd := command{Op: opUpdUser, User: u}
+	return s.apply(cmd)
+}
+
+// DeleteUser 提交"删除用户"命令到 Raft (v0.6.9)。
+func (s *Store) DeleteUser(username string) error {
+	cmd := command{Op: opDelUser, User: model.User{Username: username}}
+	return s.apply(cmd)
+}
+
 // --- 项目相关 ---
 
 // AddProject 提交"新增项目记录"命令到 Raft。

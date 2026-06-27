@@ -27,6 +27,10 @@
         <el-menu-item index="audit" @click="activeMenu = 'audit'">
           <el-icon><Document /></el-icon><span>操作日志</span>
         </el-menu-item>
+        <!-- v0.6.9: 用户管理仅 admin 可见 -->
+        <el-menu-item v-if="currentRole === 'admin'" index="users" @click="activeMenu = 'users'">
+          <el-icon><User /></el-icon><span>用户管理</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -35,6 +39,7 @@
         <div class="header-title">{{ pageTitle }}</div>
         <div class="header-right">
           <el-tag type="success" size="small" effect="dark">Raft Leader</el-tag>
+          <el-tag :type="roleTagType" size="small" effect="plain">{{ roleLabel }}</el-tag>
           <span class="user-info">{{ currentUser }}</span>
           <el-button text size="small" @click="onLogout">
             <el-icon><SwitchButton /></el-icon> 退出
@@ -48,6 +53,7 @@
         <CredentialsView v-else-if="activeMenu === 'credentials'" />
         <ClusterTopologyView v-else-if="activeMenu === 'cluster'" />
         <AuditLogView v-else-if="activeMenu === 'audit'" />
+        <UserListView v-else-if="activeMenu === 'users'" />
       </el-main>
     </el-container>
   </el-container>
@@ -55,7 +61,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Coin, Connection, Share, SwitchButton, Promotion, Key, Document } from '@element-plus/icons-vue'
+import { Coin, Connection, Share, SwitchButton, Promotion, Key, Document, User } from '@element-plus/icons-vue'
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import OpsNodeListView from './views/OpsNodeListView.vue'
@@ -63,10 +69,12 @@ import DeployView from './views/DeployView.vue'
 import CredentialsView from './views/CredentialsView.vue'
 import ClusterTopologyView from './views/ClusterTopologyView.vue'
 import AuditLogView from './views/AuditLogView.vue'
-import { getToken, removeToken, getCurrentUser } from './api/auth'
+import UserListView from './views/UserListView.vue'
+import { getToken, removeToken, getCurrentUser, getCurrentRole, fetchMe } from './api/auth'
 
 const isLoggedIn = ref(false)
 const currentUser = ref('')
+const currentRole = ref('viewer')
 const activeMenu = ref('servers')
 
 const pageTitle = computed(() => {
@@ -77,27 +85,51 @@ const pageTitle = computed(() => {
     credentials: 'SSH 凭据',
     cluster: '集群拓扑',
     audit: '操作日志',
+    users: '用户管理',
   }
   return map[activeMenu.value] || ''
 })
 
-onMounted(() => {
+// v0.6.9: 角色标签
+const roleLabel = computed(() => currentRole.value)
+const roleTagType = computed<'danger' | 'primary' | 'info'>(() => {
+  if (currentRole.value === 'admin') return 'danger'
+  if (currentRole.value === 'operator') return 'primary'
+  return 'info'
+})
+
+onMounted(async () => {
   const token = getToken()
   if (token) {
     isLoggedIn.value = true
-    currentUser.value = getCurrentUser() || 'admin'
+    currentUser.value = getCurrentUser()
+    currentRole.value = getCurrentRole()
+    // v0.6.9: 兜底拉取 /api/auth/me 恢复角色(刷新页面后 localStorage 可能缺失 role)
+    try {
+      const me = await fetchMe()
+      currentUser.value = me.username
+      currentRole.value = me.role
+      // 非 admin 默认进服务器列表, 避免 viewer 默认进无权限页
+      if (currentRole.value !== 'admin' && activeMenu.value === 'users') {
+        activeMenu.value = 'servers'
+      }
+    } catch {
+      // token 失效时 401 拦截器会清 token 刷新页面
+    }
   }
 })
 
 function onLoginSuccess(username: string) {
   isLoggedIn.value = true
   currentUser.value = username
+  currentRole.value = getCurrentRole()
 }
 
 function onLogout() {
   removeToken()
   isLoggedIn.value = false
   currentUser.value = ''
+  currentRole.value = 'viewer'
 }
 </script>
 

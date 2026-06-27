@@ -12,7 +12,7 @@
   <a href="https://developer.mozilla.org/zh-CN/docs/Web/JavaScript"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <img src="https://img.shields.io/badge/Raft-3%E8%8A%82%E7%82%B9%E5%AE%B9%E9%94%99-ff69b4" alt="Raft" />
   <img src="https://img.shields.io/badge/gRPC-%E5%8F%8C%E5%90%91%E6%B5%81-244c8e?logo=grpc&logoColor=white" alt="gRPC" />
-  <img src="https://img.shields.io/badge/version-v0.6.8-blue" alt="v0.6.8" />
+  <img src="https://img.shields.io/badge/version-v0.6.9-blue" alt="v0.6.9" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
 </p>
 
@@ -325,6 +325,7 @@ make build-linux    # 产出 dist/deepsea-server, dist/deepsea-agent (纯静态 
 - **v0.6.6** Agent 热更新与版本管理 ✅ — Agent 版本号上报、UPGRADE 指令在线下载替换、滚动批量升级、版本兼容性提示
 - **v0.6.7** 更多中间件管理 ✅ — 进程特征识别 Redis/PostgreSQL/MySQL/Kafka/Zookeeper/ES/ClickHouse, MiddlewareOps 扩展点, 前端类型标签分色
 - **v0.6.8** 拓扑可视化增强与故障诊断 ✅ — 节点水位染色(绿/橙/红)、firing 告警高亮、点击节点下钻详情(指标/版本/告警列表)、Agent 表 CPU/内存/版本/状态列
+- **v0.6.9** 多租户与权限分级 ✅ — 三级角色(admin/operator/viewer)、资源 Owner 隔离、用户管理 CRUD(Raft 持久化)、viewer 只读拦截、前端角色标签与用户管理页
 
 <details>
 <summary>历史版本详情</summary>

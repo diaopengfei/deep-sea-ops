@@ -12,6 +12,7 @@ type Server struct {
 	Username  string `json:"username"`  // SSH 用户名
 	Password  string `json:"password"`  // AES-GCM 加密后的密码密文(base64)
 	Status    string `json:"status"`    // online / offline
+	Owner     string `json:"owner"`     // v0.6.9: 所有者(创建者 username), 空表示共享
 	CreatedAt int64  `json:"createdAt"` // 创建时间(unix 毫秒)
 }
 

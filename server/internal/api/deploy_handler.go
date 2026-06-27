@@ -50,6 +50,7 @@ func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Sto
 		TargetAgentID: req.TargetAgent,
 		SourceAgentID: req.SourceAgent,
 		Status:        model.DeployStatusPending,
+		Owner:         ownerFromClaims(r), // v0.6.9: 任务发起者
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
