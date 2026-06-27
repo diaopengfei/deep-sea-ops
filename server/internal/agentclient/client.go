@@ -247,6 +247,21 @@ func (c *Client) executeCommand(cmd *pb.Command) {
 			result.Success = true
 			result.Output = "已写入 " + path + " (" + strconv.Itoa(len(content)) + " 字节)"
 		}
+	case "GET_VERSION":
+		// v0.6.6: 上报 Agent 版本号(控制面注册后主动查询, 用于版本管理与升级判断)
+		result.Success = true
+		result.Output = agentVersion
+	case "UPGRADE":
+		// v0.6.6: 热更新。从 url 下载新二进制, 校验, 替换自身, 退出(由服务管理器重启拉起)。
+		// params: url(新二进制下载地址), checksum(可选 sha256)
+		output, uerr := executeUpgrade(cmd.Params)
+		if uerr != nil {
+			result.Success = false
+			result.Error = uerr.Error()
+		} else {
+			result.Success = true
+			result.Output = output
+		}
 	default:
 		result.Success = false
 		result.Error = "未知指令类型: " + cmd.Type

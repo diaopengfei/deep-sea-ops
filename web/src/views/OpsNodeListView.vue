@@ -36,9 +36,15 @@
     <div class="panel">
       <div class="panel-toolbar">
         <span class="panel-title">ops 服务节点</span>
-        <el-button :icon="Refresh" @click="loadOpsNodes">刷新</el-button>
+        <div class="panel-actions">
+          <el-button type="warning" :icon="Upload" :disabled="selectedAgentIds.length === 0" @click="openBatchUpgradeDialog">
+            批量升级 ({{ selectedAgentIds.length }})
+          </el-button>
+          <el-button :icon="Refresh" @click="loadOpsNodes">刷新</el-button>
+        </div>
       </div>
-      <el-table :data="opsNodes" style="width: 100%" v-loading="loading" empty-text="暂无节点">
+      <el-table :data="opsNodes" style="width: 100%" v-loading="loading" empty-text="暂无节点" @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="42" :selectable="(row: OpsNode) => row.type === 'agent'" />
         <el-table-column label="类型" width="100">
           <template #default="{ row }">
             <el-tag size="small" :type="row.type === 'raft' ? 'primary' : 'success'">
@@ -82,15 +88,53 @@
             <span v-else class="sub-text">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="Agent 版本" width="160">
+          <template #default="{ row }">
+            <span v-if="row.type === 'agent'" class="version-cell">
+              <span :class="versionClass(row.version)">{{ row.version || '未知' }}</span>
+              <el-tag v-if="versionOutdated(row.version)" size="small" type="warning" effect="plain">需升级</el-tag>
+              <el-tag v-else-if="row.version" size="small" type="success" effect="plain">最新</el-tag>
+            </span>
+            <span v-else class="sub-text">{{ serverVersion || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.type === 'agent'" link type="primary" size="small" @click="openProjectDrawer(row)">查看项目</el-button>
             <el-button v-if="row.type === 'agent'" link type="success" size="small" @click="openMetricsDialog(row)">监控</el-button>
+            <el-button v-if="row.type === 'agent'" link type="warning" size="small" @click="openUpgradeDialog(row)">升级</el-button>
             <el-button v-else link type="info" size="small" @click="viewRaftDetail(row)">查看详情</el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
+
+    <!-- v0.6.6: 单/批量 Agent 升级对话框 -->
+    <el-dialog v-model="upgradeDialogVisible" :title="upgradeDialogTitle" width="560px">
+      <el-form :model="upgradeForm" label-width="100px">
+        <el-form-item label="目标 Agent">
+          <span class="upgrade-targets">{{ upgradeForm.agentIds.join(', ') }}</span>
+        </el-form-item>
+        <el-form-item label="下载地址" required>
+          <el-input v-model="upgradeForm.url" placeholder="http://oss.example.com/deepsea-agent/v0.6.6/deepsea-agent" />
+          <div class="form-tip">Agent 将从该 URL 下载新二进制并替换自身, 退出后由服务管理器(systemd)重启</div>
+        </el-form-item>
+        <el-form-item label="SHA-256">
+          <el-input v-model="upgradeForm.checksum" placeholder="可选, 校验下载文件完整性" />
+        </el-form-item>
+        <el-form-item v-if="upgradeForm.agentIds.length > 1" label="间隔秒数">
+          <el-input-number v-model="upgradeForm.waitSeconds" :min="0" :max="600" :step="5" />
+          <div class="form-tip">滚动升级: 每个 Agent 升级后等待该秒数再升级下一个, 默认 10 秒</div>
+        </el-form-item>
+        <el-form-item label="控制面版本">
+          <span class="sub-text">{{ serverVersion || '-' }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="upgradeDialogVisible = false">取消</el-button>
+        <el-button type="warning" :loading="upgradeLoading" @click="submitUpgrade">确认升级</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 项目列表抽屉 -->
     <el-drawer v-model="drawerVisible" :title="`Agent ${drawerAgentId} 的项目`" size="60%">
@@ -211,9 +255,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Share, Connection, Monitor, FolderOpened, Refresh, InfoFilled } from '@element-plus/icons-vue'
-import { listOpsNodes, listProjects, type OpsNode, type ProjectRecord } from '../api/server'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Share, Connection, Monitor, FolderOpened, Refresh, InfoFilled, Upload } from '@element-plus/icons-vue'
+import {
+  listOpsNodes, listProjects, getServerVersion, upgradeAgent, batchUpgradeAgents,
+  type OpsNode, type ProjectRecord
+} from '../api/server'
 import MetricsDialog from './MetricsDialog.vue'
 import ConfigBaselineDialog from './ConfigBaselineDialog.vue'
 
@@ -307,6 +354,122 @@ const metricsAgentId = ref('')
 function openMetricsDialog(row: OpsNode) {
   metricsAgentId.value = row.id
   metricsDialogVisible.value = true
+}
+
+// v0.6.6: Agent 版本号管理
+const serverVersion = ref('')
+
+// 简单语义版本比较: 仅比较 v 主.次.补丁; 缺位补 0; 非法返回 null
+function parseSemver(v?: string): number[] | null {
+  if (!v) return null
+  const m = v.match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/)
+  if (!m) return null
+  return [parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0, m[3] ? parseInt(m[3], 10) : 0]
+}
+
+// Agent 版本低于控制面 => 需升级
+function versionOutdated(agentVer?: string): boolean {
+  if (!agentVer || !serverVersion.value) return false
+  const a = parseSemver(agentVer)
+  const s = parseSemver(serverVersion.value)
+  if (!a || !s) return false
+  for (let i = 0; i < 3; i++) {
+    if (a[i]! < s[i]!) return true
+    if (a[i]! > s[i]!) return false
+  }
+  return false
+}
+
+function versionClass(agentVer?: string): string {
+  if (!agentVer) return 'sub-text'
+  return versionOutdated(agentVer) ? 'ver-outdated' : 'ver-latest'
+}
+
+// --- v0.6.6: Agent 升级(单 + 批量滚动) ---
+const selectedAgentIds = ref<string[]>([])
+function onSelectionChange(rows: OpsNode[]) {
+  selectedAgentIds.value = rows.filter((r) => r.type === 'agent').map((r) => r.id)
+}
+
+const upgradeDialogVisible = ref(false)
+const upgradeLoading = ref(false)
+const upgradeForm = ref<{ agentIds: string[]; url: string; checksum: string; waitSeconds: number }>({
+  agentIds: [],
+  url: '',
+  checksum: '',
+  waitSeconds: 10,
+})
+
+const upgradeDialogTitle = computed(() =>
+  upgradeForm.value.agentIds.length > 1
+    ? `批量升级 ${upgradeForm.value.agentIds.length} 个 Agent`
+    : '升级 Agent'
+)
+
+function openUpgradeDialog(row: OpsNode) {
+  upgradeForm.value = { agentIds: [row.id], url: '', checksum: '', waitSeconds: 10 }
+  upgradeDialogVisible.value = true
+}
+
+function openBatchUpgradeDialog() {
+  if (selectedAgentIds.value.length === 0) {
+    ElMessage.warning('请先勾选要升级的 Agent')
+    return
+  }
+  upgradeForm.value = {
+    agentIds: [...selectedAgentIds.value],
+    url: '',
+    checksum: '',
+    waitSeconds: 10,
+  }
+  upgradeDialogVisible.value = true
+}
+
+async function submitUpgrade() {
+  if (!upgradeForm.value.url) {
+    ElMessage.warning('请填写下载地址')
+    return
+  }
+  const isBatch = upgradeForm.value.agentIds.length > 1
+  // 二次确认: 升级会重启 Agent
+  try {
+    await ElMessageBox.confirm(
+      `${isBatch ? `将滚动升级 ${upgradeForm.value.agentIds.length} 个 Agent` : `将升级 Agent ${upgradeForm.value.agentIds[0]}`}, 升级过程会下载二进制并重启服务, 确认继续?`,
+      '升级确认',
+      { type: 'warning', confirmButtonText: '确认升级', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+
+  upgradeLoading.value = true
+  try {
+    if (isBatch) {
+      const resp = await batchUpgradeAgents({
+        agentIds: upgradeForm.value.agentIds,
+        url: upgradeForm.value.url,
+        checksum: upgradeForm.value.checksum || undefined,
+        waitSeconds: upgradeForm.value.waitSeconds,
+      })
+      ElMessage.success(`滚动升级已启动, 共 ${resp.agentCount} 个 Agent, 间隔 ${resp.waitSeconds} 秒`)
+      upgradeDialogVisible.value = false
+      // 滚动升级是异步任务, 等 30 秒后刷新列表(让新版本号反映出来)
+      setTimeout(loadOpsNodes, 30000)
+    } else {
+      const resp = await upgradeAgent(upgradeForm.value.agentIds[0], {
+        url: upgradeForm.value.url,
+        checksum: upgradeForm.value.checksum || undefined,
+      })
+      ElMessage.success(`Agent 升级成功: ${resp.output || 'ok'}`)
+      upgradeDialogVisible.value = false
+      // 升级后 Agent 会重启, 等 10 秒后刷新
+      setTimeout(loadOpsNodes, 10000)
+    }
+  } catch (e: any) {
+    ElMessage.error('升级失败: ' + (e.response?.data?.error || e.message))
+  } finally {
+    upgradeLoading.value = false
+  }
 }
 
 // v0.6.5: 配置基准对话框
@@ -416,6 +579,10 @@ function semanticRowClass({ row }: { row: KeyDiff }): string {
 onMounted(() => {
   loadOpsNodes()
   loadProjectCount()
+  // v0.6.6: 加载控制面版本号, 用于 Agent 版本对比
+  getServerVersion()
+    .then((v) => { serverVersion.value = v })
+    .catch(() => { /* 控制面未启用版本接口时忽略 */ })
   timer = window.setInterval(loadOpsNodes, 5000)
 })
 onUnmounted(() => {
@@ -490,6 +657,11 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .panel-title {
@@ -585,4 +757,28 @@ onUnmounted(() => {
 .metric-ok { color: #67c23a; }
 .metric-warning { color: #e6a23c; font-weight: 600; }
 .metric-critical { color: #f56c6c; font-weight: 600; }
+
+/* v0.6.6: Agent 版本列与升级对话框 */
+.version-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ver-latest { color: #67c23a; font-weight: 600; }
+.ver-outdated { color: #e6a23c; font-weight: 600; }
+
+.upgrade-targets {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  color: #303133;
+  word-break: break-all;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+  line-height: 1.4;
+}
 </style>

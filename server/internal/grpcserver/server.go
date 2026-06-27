@@ -43,6 +43,7 @@ type agentConn struct {
 	lastSeen time.Time           // 最后一次心跳时间, 用于判断是否存活
 	cpu      float64             // 最新 CPU 使用率(心跳上报, 实时卡片用)
 	mem      float64             // 最新内存使用率(心跳上报, 实时卡片用)
+	version  string              // v0.6.6: Agent 版本号(注册后控制面主动查询得到)
 	send     chan *pb.ServerMessage // 下行通道: 控制面向该 Agent 推消息(指令等)
 	done     chan struct{}        // 关闭信号: 连接断开或被新连接替换时关闭, 通知 send goroutine 退出
 }
@@ -69,6 +70,7 @@ type AgentInfo struct {
 	LastSeen   time.Time `json:"lastSeen"`
 	CPUPercent float64   `json:"cpuPercent"` // v0.6.3: 实时 CPU 使用率(心跳上报)
 	MemPercent float64   `json:"memPercent"` // v0.6.3: 实时内存使用率(心跳上报)
+	Version    string    `json:"version"`    // v0.6.6: Agent 版本号
 }
 
 // ListAgents 返回当前所有在线 Agent 的信息, 供 /api/agents 接口调用。
@@ -80,7 +82,7 @@ func (s *Server) ListAgents() []AgentInfo {
 	for _, c := range s.agents {
 		out = append(out, AgentInfo{
 			ID: c.id, Hostname: c.hostname, IP: c.ip, LastSeen: c.lastSeen,
-			CPUPercent: c.cpu, MemPercent: c.mem,
+			CPUPercent: c.cpu, MemPercent: c.mem, Version: c.version,
 		})
 	}
 	return out
@@ -109,6 +111,9 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 	}
 	conn := s.handleRegister(regMsg.Register, stream)
 	log.Printf("Agent 注册: id=%s host=%s ip=%s", regMsg.Register.AgentId, regMsg.Register.Hostname, regMsg.Register.Ip)
+
+	// v0.6.6: 注册后异步查询 Agent 版本号, 写入 agentConn.version 供前端展示与升级判断
+	go s.fetchAgentVersion(conn)
 
 	ctx := stream.Context()
 
@@ -233,6 +238,48 @@ func (s *Server) handleResult(r *pb.CommandResult) {
 func (s *Server) ReadConfig(agentID, path string, timeout time.Duration) (string, error) {
 	params := map[string]string{"path": path}
 	return s.SendCommand(agentID, "READ_CONFIG", params, timeout)
+}
+
+// fetchAgentVersion 注册后异步查询 Agent 版本号并写入 agentConn(v0.6.6)。
+// 失败不报错: Agent 旧版本不识别 GET_VERSION 时静默忽略, version 留空。
+func (s *Server) fetchAgentVersion(c *agentConn) {
+	ver, err := s.SendCommand(c.id, "GET_VERSION", nil, 10*time.Second)
+	if err != nil {
+		log.Printf("查询 Agent %s 版本失败(可能为旧版本): %v", c.id, err)
+		return
+	}
+	s.mu.Lock()
+	// 指针比较确保仍是当前连接(避免重连后写错)
+	if cur, ok := s.agents[c.id]; ok && cur == c {
+		c.version = ver
+	}
+	s.mu.Unlock()
+	log.Printf("Agent %s 版本: %s", c.id, ver)
+}
+
+// GetAgentVersion 主动查询指定 Agent 的版本号(供 API 调用)。
+func (s *Server) GetAgentVersion(agentID string, timeout time.Duration) (string, error) {
+	return s.SendCommand(agentID, "GET_VERSION", nil, timeout)
+}
+
+// GetCachedVersion 返回已缓存的 Agent 版本号(不发起指令), 未查询到返回空。
+func (s *Server) GetCachedVersion(agentID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if c, ok := s.agents[agentID]; ok {
+		return c.version
+	}
+	return ""
+}
+
+// UpgradeAgent 向指定 Agent 下发升级指令(v0.6.6)。
+// url 是新二进制下载地址, checksum 可选(sha256)。Agent 下载替换自身后退出, 由服务管理器重启。
+func (s *Server) UpgradeAgent(agentID, url, checksum string, timeout time.Duration) (string, error) {
+	params := map[string]string{"url": url}
+	if checksum != "" {
+		params["checksum"] = checksum
+	}
+	return s.SendCommand(agentID, "UPGRADE", params, timeout)
 }
 
 // CollectConfigs 向指定 Agent 下发配置采集指令, 阻塞等待结果(带超时)。

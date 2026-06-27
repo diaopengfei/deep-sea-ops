@@ -30,6 +30,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 		auth.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// v0.6.6: 控制面版本号(无需登录, 前端登录页/兼容性判断用)
+	mux.HandleFunc("/api/version", handleServerVersion)
+
 	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -69,7 +72,7 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 	})
 
 	// --- 受保护路由(需登录) ---
-	mw := auth.NewMiddleware("/api/login", "/api/healthz")
+	mw := auth.NewMiddleware("/api/login", "/api/healthz", "/api/version")
 	mw.SetAudit(aud) // v0.6.4: 写操作自动记录审计
 
 	mux.HandleFunc("/api/auth/me", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +135,15 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 	mux.HandleFunc("/api/agents/", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 		parts := strings.Split(path, "/")
+		// v0.6.6: 批量滚动升级 POST /api/agents/upgrade { agentIds, url, checksum, waitSeconds }
+		if len(parts) == 1 && parts[0] == "upgrade" {
+			if r.Method == http.MethodPost {
+				handleBatchUpgradeAgents(w, r, gs)
+			} else {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+			return
+		}
 		if len(parts) < 2 {
 			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知路径"})
 			return
@@ -153,6 +165,12 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			return
 		}
 
+		// v0.6.6: GET 版本查询(返回缓存版本, 无则主动查询)
+		if r.Method == http.MethodGet && action == "version" {
+			handleGetAgentVersion(w, r, gs, agentID)
+			return
+		}
+
 		// 其余为写操作(POST)
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -169,6 +187,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			handleDeploy(w, r, gs, s, agentID)
 		case "stop-project":
 			handleStopProject(w, r, gs, agentID)
+		case "upgrade":
+			// v0.6.6: 单 Agent 升级
+			handleUpgradeAgent(w, r, gs, agentID)
 		default:
 			auth.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "未知操作: " + action})
 		}

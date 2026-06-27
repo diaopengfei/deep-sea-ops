@@ -51,6 +51,7 @@ func handleListOpsNodes(w http.ResponseWriter, r *http.Request, s *store.Store, 
 			LastSeen:   a.LastSeen.Unix(),
 			CPUPercent: a.CPUPercent,
 			MemPercent: a.MemPercent,
+			Version:    a.Version, // v0.6.6: Agent 版本号
 		})
 	}
 

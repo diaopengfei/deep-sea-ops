@@ -92,10 +92,51 @@ export interface AgentInfo {
   lastSeen: string
   cpuPercent?: number  // v0.6.3: 实时 CPU 使用率(心跳上报)
   memPercent?: number  // v0.6.3: 实时内存使用率(心跳上报)
+  version?: string     // v0.6.6: Agent 版本号
 }
 
 export async function listAgents(): Promise<AgentInfo[]> {
   const res = await http.get<AgentInfo[]>('/agents')
+  return res.data
+}
+
+// --- v0.6.6: 控制面版本号(无需登录) ---
+export async function getServerVersion(): Promise<string> {
+  const res = await http.get<{ server: string }>('/version')
+  return res.data.server
+}
+
+// --- v0.6.6: Agent 热更新与版本管理 ---
+export async function getAgentVersion(agentId: string): Promise<string> {
+  const res = await http.get<{ version: string; error?: string }>(`/agents/${agentId}/version`)
+  return res.data.version
+}
+
+export interface UpgradeAgentRequest {
+  url: string
+  checksum?: string
+}
+
+export interface UpgradeResult {
+  status: string
+  agentId?: string
+  output?: string
+}
+
+export async function upgradeAgent(agentId: string, req: UpgradeAgentRequest): Promise<UpgradeResult> {
+  const res = await http.post<UpgradeResult>(`/agents/${agentId}/upgrade`, req, { timeout: 360000 })
+  return res.data
+}
+
+export interface BatchUpgradeRequest {
+  agentIds: string[]
+  url: string
+  checksum?: string
+  waitSeconds?: number
+}
+
+export async function batchUpgradeAgents(req: BatchUpgradeRequest): Promise<{ status: string; agentCount: number; waitSeconds: number }> {
+  const res = await http.post('/agents/upgrade', req)
   return res.data
 }
 
@@ -128,6 +169,7 @@ export interface OpsNode {
   lastSeen?: number      // unix 秒
   cpuPercent?: number    // v0.6.3: 实时 CPU 使用率(agent 才有)
   memPercent?: number    // v0.6.3: 实时内存使用率(agent 才有)
+  version?: string       // v0.6.6: Agent 版本号(agent 才有)
   isLeader?: boolean
   isSelf?: boolean
 }

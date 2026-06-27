@@ -12,6 +12,7 @@ type OpsNode struct {
 	LastSeen   int64   `json:"lastSeen"`   // 最后心跳时间(unix 秒, agent 才有)
 	CPUPercent float64 `json:"cpuPercent"` // v0.6.3: 实时 CPU 使用率(agent 才有)
 	MemPercent float64 `json:"memPercent"` // v0.6.3: 实时内存使用率(agent 才有)
+	Version    string  `json:"version"`    // v0.6.6: Agent 版本号(agent 才有)
 	IsLeader   bool    `json:"isLeader"`   // 是否当前 Leader
 	IsSelf     bool    `json:"isSelf"`     // 是否当前节点自己
 }
