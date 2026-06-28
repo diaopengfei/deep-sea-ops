@@ -105,10 +105,32 @@ func main() {
 	}()
 
 	// v0.7.0: 事件总线(异步, 缓冲 256)。部署完成/扫描发现新项目/告警触发等事件经总线推送到 Webhook。
-	// 启动顺序: EventBus 必须在扫描调度器和告警引擎之前创建, 以便装配事件源回调。
+	// 启动顺序要点: 先创建总线 + 注册所有订阅者(WebhookDispatcher), 再 Start 总线,
+	// 避免 Start 后到 Subscribe 前的窗口期内发布的事件被静默丢弃。
 	eventBus := eventbus.New(256)
+
+	// v0.7.0: Webhook 分发器(订阅事件总线, 按订阅过滤后异步推送, 带指数退避重试)
+	// 必须在 eventBus.Start() 之前 Subscribe, 否则启动窗口的事件无订阅者会丢失。
+	webhookDispatcher := api.NewWebhookDispatcher(storeInstance, eventBus)
+	webhookDispatcher.Start() // 仅 Subscribe, 不消费(eventBus 未 Start)
+	defer webhookDispatcher.Stop() // LIFO: 先于 eventBus.Stop 执行, 等在途推送完成
+
 	eventBus.Start()
-	defer eventBus.Stop()
+	defer eventBus.Stop() // LIFO: 后执行, 排空剩余事件
+
+	// v0.7.0: 装配 Agent 离线回调, 连接断开时发布 node.offline 事件供 Webhook 推送。
+	// removeAgent 仅在确实从注册表删除(非重连替换)时调用回调。
+	grpcSrv.SetOnAgentOffline(func(agentID, hostname, ip string) {
+		eventBus.Publish(model.Event{
+			Type:      model.EventNodeOffline,
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"agentId":  agentID,
+				"hostname": hostname,
+				"ip":       ip,
+			},
+		})
+	})
 
 	// 启动后台自动扫描调度器(每 10 分钟扫描所有在线 Agent)
 	scanScheduler := scheduler.NewScheduler(storeInstance, grpcSrv, 10*time.Minute)
@@ -155,10 +177,6 @@ func main() {
 	alertEngine := monitor.NewAlertEngine(metricsStore, alertRules, alertNotifier, collectInterval)
 	alertEngine.Start()
 	defer alertEngine.Stop()
-
-	// v0.7.0: Webhook 分发器(订阅事件总线, 按订阅过滤后异步推送, 带指数退避重试)
-	webhookDispatcher := api.NewWebhookDispatcher(storeInstance, eventBus)
-	webhookDispatcher.Start()
 
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
 	// 传入 scanScheduler, 部署成功后自动触发目标 Agent 扫描

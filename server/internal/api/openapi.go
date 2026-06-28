@@ -83,6 +83,22 @@ func buildOpenAPISpec() map[string]interface{} {
 					"error": map[string]interface{}{"type": "string"},
 				},
 			},
+			"LoginResponse": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"accessToken":  map[string]interface{}{"type": "string"},
+					"refreshToken": map[string]interface{}{"type": "string"},
+					"expiresAt":    map[string]interface{}{"type": "integer", "format": "int64"},
+					"user": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"username":   map[string]interface{}{"type": "string"},
+							"role":       map[string]interface{}{"type": "string", "enum": []string{"admin", "operator", "viewer"}},
+							"createdAt":  map[string]interface{}{"type": "integer", "format": "int64"},
+						},
+					},
+				},
+			},
 			"Server": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -208,7 +224,7 @@ func buildOpenAPIPaths() map[string]interface{} {
 					},
 				},
 			},
-			"responses": jsonResp("#/components/schemas/Server"),
+			"responses": jsonResp("#/components/schemas/LoginResponse"),
 		},
 	}
 

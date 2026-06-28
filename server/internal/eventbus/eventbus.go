@@ -44,8 +44,9 @@ func New(bufferSize int) *EventBus {
 	}
 }
 
-// Start 启动事件分发 goroutine。必须在 Subscribe 后、Publish 前调用。
-// 启动后所有订阅者的回调在独立 goroutine 中并发执行(同一事件会被并发投递给所有订阅者)。
+// Start 启动事件分发 goroutine。
+// 建议在所有 Subscribe 后、Publish 前调用, 避免 Start 到 Subscribe 窗口期内发布的事件无订阅者而丢失。
+// Subscribe 内部用互斥锁保护, Start 后再 Subscribe 也能安全生效, 但仍推荐先订阅再启动。
 func (b *EventBus) Start() {
 	b.wg.Add(1)
 	go func() {
@@ -88,7 +89,8 @@ func (b *EventBus) Stop() {
 }
 
 // Subscribe 注册一个事件订阅者。返回取消订阅函数。
-// 必须在 Start 前调用, Start 后再 Subscribe 不会生效(避免并发读写 handlers 切片)。
+// 内部用互斥锁保护, Start 前后均可调用(并发安全); 但推荐在 Start 前订阅,
+// 避免 Start 到 Subscribe 窗口期内发布的事件无订阅者接收。
 func (b *EventBus) Subscribe(h Handler) func() {
 	b.mu.Lock()
 	defer b.mu.Unlock()

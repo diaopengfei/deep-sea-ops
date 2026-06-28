@@ -32,6 +32,10 @@ type Server struct {
 	// metricsStore 存储资源指标(环形缓冲 + 最新值), 可为 nil(未启用监控)。
 	// 心跳的 CPU/内存写入最新值, 完整指标由 monitor 采集器写入。
 	metricsStore *metrics.Store
+
+	// v0.7.0: Agent 离线回调, 由 main 装配, 用于发布事件到 EventBus。
+	// 参数: agentID, hostname, ip。仅在确实从注册表删除(非重连替换)时调用。
+	onAgentOffline func(agentID, hostname, ip string)
 }
 
 // agentConn 记录一个在线 Agent 的运行时状态。
@@ -60,6 +64,13 @@ func NewServer() *Server {
 // 不调用时 metricsStore 为 nil, 心跳只更新 lastSeen/cpu/mem 到 agentConn(供 ListAgents)。
 func (s *Server) SetMetricsStore(ms *metrics.Store) {
 	s.metricsStore = ms
+}
+
+// SetOnAgentOffline 注入 Agent 离线回调(v0.7.0)。
+// 回调在 Agent 连接断开且确实从注册表删除时调用(重连替换旧连接不触发)。
+// 用于发布 node.offline 事件到 EventBus 供 Webhook 推送。
+func (s *Server) SetOnAgentOffline(fn func(agentID, hostname, ip string)) {
+	s.onAgentOffline = fn
 }
 
 // AgentInfo 是给 HTTP API 返回的 Agent 信息(精简版, 不含内部通道)。
@@ -191,13 +202,22 @@ func (s *Server) handleRegister(req *pb.RegisterRequest, stream pb.AgentService_
 
 // removeAgent 从注册表移除 Agent 连接。
 // 用指针比较(cur == c)确保只删自己, 不误删重连后的新连接。
+// v0.7.0: 确实删除时触发 onAgentOffline 回调, 发布 node.offline 事件。
 func (s *Server) removeAgent(c *agentConn) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	removed := false
 	if cur, ok := s.agents[c.id]; ok && cur == c {
 		delete(s.agents, c.id)
 		close(c.done)
+		removed = true
+	}
+	s.mu.Unlock()
+	if removed {
 		log.Printf("Agent %s 断开连接", c.id)
+		// 回调在锁外调用, 避免 main 装配的回调中反向访问 Server 造成死锁
+		if s.onAgentOffline != nil {
+			s.onAgentOffline(c.id, c.hostname, c.ip)
+		}
 	}
 }
 

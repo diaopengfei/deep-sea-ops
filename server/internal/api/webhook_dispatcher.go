@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/deepsea-ops/server/internal/eventbus"
@@ -16,11 +18,22 @@ import (
 	"github.com/deepsea-ops/server/internal/store"
 )
 
+// webhookHTTPClient 是 Webhook 推送共享的 HTTP 客户端, 复用连接池降低 TCP/TLS 握手开销。
+var webhookHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // WebhookDispatcher 订阅 EventBus, 把事件推送到匹配的 Webhook。
 // 推送异步执行, 失败重试最多 3 次(指数退避)。
 type WebhookDispatcher struct {
 	store *store.Store
 	bus   *eventbus.EventBus
+	wg    sync.WaitGroup // 跟踪在途推送 goroutine, Stop 时等待完成
 }
 
 // NewWebhookDispatcher 创建 Webhook 推送器。
@@ -28,12 +41,18 @@ func NewWebhookDispatcher(s *store.Store, bus *eventbus.EventBus) *WebhookDispat
 	return &WebhookDispatcher{store: s, bus: bus}
 }
 
-// Start 订阅 EventBus 并启动推送。返回停止函数。
+// Start 订阅 EventBus。必须在 eventBus.Start() 之前调用, 避免启动窗口事件丢失。
 func (d *WebhookDispatcher) Start() {
 	if d.bus == nil {
 		return
 	}
 	d.bus.Subscribe(d.handleEvent)
+}
+
+// Stop 等待所有在途推送 goroutine 完成。
+// 应在 eventBus.Stop() 之前调用(LIFO defer 顺序), 保证事件已排空后再等推送完成。
+func (d *WebhookDispatcher) Stop() {
+	d.wg.Wait()
 }
 
 // handleEvent 是 EventBus 订阅回调。匹配订阅了该事件类型的 Webhook, 异步推送。
@@ -50,8 +69,10 @@ func (d *WebhookDispatcher) handleEvent(ev model.Event) {
 		if !eventMatch(wh.Events, ev.Type) {
 			continue
 		}
-		// 异步推送, 失败重试
+		// 异步推送, 失败重试。用 WaitGroup 跟踪以便优雅关闭。
+		d.wg.Add(1)
 		go func(wh model.Webhook) {
+			defer d.wg.Done()
 			payload := map[string]interface{}{
 				"type":      ev.Type,
 				"timestamp": ev.Timestamp.Format(time.RFC3339),
@@ -107,6 +128,7 @@ func PushWebhookWithRetry(wh model.Webhook, payload interface{}, maxRetries int)
 }
 
 // doPost 执行单次 HTTP POST, 带 HMAC 签名头(若 Secret 非空)。
+// 使用共享 webhookHTTPClient 复用连接池; 读完并丢弃 response body 以保持 keepalive。
 func doPost(wh model.Webhook, body []byte) error {
 	req, err := http.NewRequest("POST", wh.URL, bytes.NewReader(body))
 	if err != nil {
@@ -120,12 +142,15 @@ func doPost(wh model.Webhook, body []byte) error {
 		mac.Write(body)
 		req.Header.Set("X-Deepsea-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := webhookHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	// 读完 body 再 Close, 否则连接无法复用(keepalive 失效)
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook 返回 %d", resp.StatusCode)
 	}
