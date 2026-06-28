@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/deepsea-ops/server/internal/auth"
+	"github.com/deepsea-ops/server/internal/eventbus"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/model"
 	"github.com/deepsea-ops/server/internal/scheduler"
@@ -20,7 +21,8 @@ import (
 // handleCreateDeployTask 创建部署任务并下发到目标 Agent 执行。
 // 流程: 创建任务(Raft 持久化) → 下发 DEPLOY 指令到目标 Agent → 更新任务状态
 // 部署成功后若 sc 非 nil, 自动触发目标 Agent 的单次扫描(事件驱动, 不等 10 分钟周期)。
-func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Store, gs *grpcserver.Server, sc *scheduler.Scheduler) {
+// v0.7.0: 部署完成(成功/失败)后通过 bus 发布事件, 供 Webhook 推送。
+func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Store, gs *grpcserver.Server, sc *scheduler.Scheduler, bus *eventbus.EventBus) {
 	var req struct {
 		Type        string `json:"type"` // scale_out / migrate
 		ProjectPath string `json:"projectPath"`
@@ -60,14 +62,15 @@ func handleCreateDeployTask(w http.ResponseWriter, r *http.Request, s *store.Sto
 	}
 
 	// 异步执行部署: 下发 DEPLOY 指令到目标 Agent
-	go executeDeployTask(s, gs, sc, task)
+	go executeDeployTask(s, gs, sc, bus, task)
 
 	auth.WriteJSON(w, http.StatusOK, task)
 }
 
 // executeDeployTask 异步执行部署任务: 下发指令到 Agent, 更新状态。
 // 部署成功后触发目标 Agent 的单次扫描(若 sc 非 nil), 让新部署的项目立即出现在扫描结果中。
-func executeDeployTask(s *store.Store, gs *grpcserver.Server, sc *scheduler.Scheduler, task model.DeployTask) {
+// v0.7.0: 部署完成(成功/失败)后通过 bus 发布事件, 供 Webhook 推送。
+func executeDeployTask(s *store.Store, gs *grpcserver.Server, sc *scheduler.Scheduler, bus *eventbus.EventBus, task model.DeployTask) {
 	// 标记为运行中
 	task.Status = model.DeployStatusRunning
 	task.UpdatedAt = time.Now()
@@ -106,5 +109,27 @@ func executeDeployTask(s *store.Store, gs *grpcserver.Server, sc *scheduler.Sche
 	task.UpdatedAt = time.Now()
 	if err := s.UpdDeployTask(task); err != nil {
 		log.Printf("警告: 更新任务 %s 最终状态失败: %v", task.ID, err)
+	}
+
+	// v0.7.0: 发布部署完成事件, 供 Webhook 推送
+	if bus != nil {
+		eventType := model.EventDeployCompleted
+		if task.Status == model.DeployStatusFailed {
+			eventType = model.EventDeployFailed
+		}
+		bus.Publish(model.Event{
+			Type:      eventType,
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"taskId":      task.ID,
+				"type":        task.Type,
+				"projectName": task.ProjectName,
+				"targetAgent": task.TargetAgentID,
+				"sourceAgent": task.SourceAgentID,
+				"status":      task.Status,
+				"error":       task.Error,
+				"owner":       task.Owner,
+			},
+		})
 	}
 }

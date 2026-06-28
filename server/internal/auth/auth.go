@@ -174,6 +174,7 @@ func FromContext(ctx context.Context) *Claims {
 type Middleware struct {
 	whitelist map[string]bool   // 不需要鉴权的路径
 	audit     *audit.Store      // 可选, 审计日志存储
+	tokens    TokenStore        // v0.7.0 可选, API Token 存储(启用后支持 API Token 鉴权)
 }
 
 // NewMiddleware 创建鉴权中间件, whitelist 里的路径跳过校验。
@@ -190,13 +191,15 @@ func (m *Middleware) SetAudit(s *audit.Store) { m.audit = s }
 
 // Wrap 包装一个 http.HandlerFunc, 强制鉴权。
 // 用法: mux.HandleFunc("/api/servers", mw.Wrap(handleListServers))
+//
+// v0.7.0: 若注入了 TokenStore, JWT 校验失败时回退尝试 API Token 鉴权。
 func (m *Middleware) Wrap(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if m.whitelist[r.URL.Path] {
 			next(w, r)
 			return
 		}
-		claims, err := extractAndVerify(r)
+		claims, err := extractAndVerifyWithFallback(r, m)
 		if err != nil {
 			http.Error(w, "未授权: "+err.Error(), http.StatusUnauthorized)
 			return

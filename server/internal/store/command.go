@@ -23,6 +23,10 @@ type command struct {
 	Credential  model.SSHCredential `json:"credential"`  // add_credential 时携带
 	ConfigDiff  *ConfigDiffUpdate   `json:"configDiff"`  // set_config_diff 时携带
 	Baseline    *ConfigBaselineUpdate `json:"baseline"`  // set_config_baseline 时携带
+	APIToken    model.APIToken      `json:"apiToken"`    // v0.7.0 add_token / upd_token_last_used 时携带
+	TokenID     string              `json:"tokenId"`     // v0.7.0 del_token 时携带
+	Webhook     model.Webhook       `json:"webhook"`     // v0.7.0 add_webhook / upd_webhook 时携带
+	WebhookID   string              `json:"webhookId"`   // v0.7.0 del_webhook 时携带
 }
 
 // ServerUpdate 是原子部分更新服务器的参数(解决读-改-写竞态)。
@@ -71,4 +75,9 @@ const (
 	opDelCredential      = "del_credential"
 	opSetConfigDiff      = "set_config_diff" // 持久化配置比对结果
 	opSetConfigBaseline  = "set_config_baseline" // v0.6.5 保存配置基准版本 + 追加版本历史
+	opAddToken           = "add_token"            // v0.7.0 新增 API Token
+	opUpdTokenLastUsed   = "upd_token_last_used"  // v0.7.0 更新 Token 最后使用时间
+	opDelToken           = "del_token"            // v0.7.0 删除 API Token
+	opAddWebhook         = "add_webhook"          // v0.7.0 新增/更新 Webhook(同 ID 覆盖)
+	opDelWebhook         = "del_webhook"          // v0.7.0 删除 Webhook
 )

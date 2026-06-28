@@ -31,6 +31,13 @@
         <el-menu-item v-if="currentRole === 'admin'" index="users" @click="activeMenu = 'users'">
           <el-icon><User /></el-icon><span>用户管理</span>
         </el-menu-item>
+        <!-- v0.7.0: API 开放与集成仅 admin 可见 -->
+        <el-menu-item v-if="currentRole === 'admin'" index="tokens" @click="activeMenu = 'tokens'">
+          <el-icon><Ticket /></el-icon><span>API Token</span>
+        </el-menu-item>
+        <el-menu-item v-if="currentRole === 'admin'" index="webhooks" @click="activeMenu = 'webhooks'">
+          <el-icon><Bell /></el-icon><span>Webhook</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -54,6 +61,8 @@
         <ClusterTopologyView v-else-if="activeMenu === 'cluster'" />
         <AuditLogView v-else-if="activeMenu === 'audit'" />
         <UserListView v-else-if="activeMenu === 'users'" />
+        <ApiTokenListView v-else-if="activeMenu === 'tokens'" />
+        <WebhookListView v-else-if="activeMenu === 'webhooks'" />
       </el-main>
     </el-container>
   </el-container>
@@ -61,7 +70,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Coin, Connection, Share, SwitchButton, Promotion, Key, Document, User } from '@element-plus/icons-vue'
+import { Coin, Connection, Share, SwitchButton, Promotion, Key, Document, User, Ticket, Bell } from '@element-plus/icons-vue'
 import LoginView from './views/LoginView.vue'
 import ServerListView from './views/ServerListView.vue'
 import OpsNodeListView from './views/OpsNodeListView.vue'
@@ -70,6 +79,8 @@ import CredentialsView from './views/CredentialsView.vue'
 import ClusterTopologyView from './views/ClusterTopologyView.vue'
 import AuditLogView from './views/AuditLogView.vue'
 import UserListView from './views/UserListView.vue'
+import ApiTokenListView from './views/ApiTokenListView.vue'
+import WebhookListView from './views/WebhookListView.vue'
 import { getToken, removeToken, getCurrentUser, getCurrentRole, fetchMe } from './api/auth'
 
 const isLoggedIn = ref(false)
@@ -86,6 +97,8 @@ const pageTitle = computed(() => {
     cluster: '集群拓扑',
     audit: '操作日志',
     users: '用户管理',
+    tokens: 'API Token',
+    webhooks: 'Webhook',
   }
   return map[activeMenu.value] || ''
 })

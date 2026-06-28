@@ -10,6 +10,7 @@ import (
 
 	"github.com/deepsea-ops/server/internal/audit"
 	"github.com/deepsea-ops/server/internal/auth"
+	"github.com/deepsea-ops/server/internal/eventbus"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/metrics"
 	"github.com/deepsea-ops/server/internal/model"
@@ -19,12 +20,13 @@ import (
 	"github.com/deepsea-ops/server/internal/webassets"
 )
 
-// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器、指标存储、审计存储和告警引擎。
+// New 构造 HTTP 路由, 注入 store、grpcServer、auth 服务、扫描调度器、指标存储、审计存储、告警引擎和事件总线。
 // sc 可为 nil(开发环境不联动扫描), 非 nil 时部署成功后自动触发目标 Agent 扫描。
 // ms 可为 nil(未启用监控), 非 nil 时提供指标查询接口。
 // aud 可为 nil(未启用审计), 非 nil 时写操作自动记录审计日志。
 // ae 可为 nil(未启用告警), 非 nil 时提供 /api/alerts 接口供拓扑可视化故障诊断(v0.6.8)。
-func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store, aud *audit.Store, ae *monitor.AlertEngine) http.Handler {
+// bus 可为 nil(未启用事件总线), 非 nil 时部署/扫描/告警等事件经总线推送到 Webhook(v0.7.0)。
+func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.Scheduler, ms *metrics.Store, aud *audit.Store, ae *monitor.AlertEngine, bus *eventbus.EventBus) http.Handler {
 	mux := http.NewServeMux()
 
 	// --- 白名单路由(无需登录) ---
@@ -34,6 +36,10 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 
 	// v0.6.6: 控制面版本号(无需登录, 前端登录页/兼容性判断用)
 	mux.HandleFunc("/api/version", handleServerVersion)
+
+	// v0.7.0: OpenAPI 规范文档 + Swagger UI(白名单, 供外部系统集成参考)
+	mux.HandleFunc("/api/openapi.json", handleOpenAPISpec)
+	mux.HandleFunc("/api/docs", handleSwaggerUI)
 
 	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -74,8 +80,9 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 	})
 
 	// --- 受保护路由(需登录) ---
-	mw := auth.NewMiddleware("/api/login", "/api/healthz", "/api/version")
-	mw.SetAudit(aud) // v0.6.4: 写操作自动记录审计
+	mw := auth.NewMiddleware("/api/login", "/api/healthz", "/api/version", "/api/openapi.json", "/api/docs")
+	mw.SetAudit(aud)               // v0.6.4: 写操作自动记录审计
+	mw.SetTokenStore(s)            // v0.7.0: 启用 API Token 认证(JWT 失败回退)
 
 	mux.HandleFunc("/api/auth/me", mw.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		claims := auth.FromContext(r.Context())
@@ -357,7 +364,7 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			if denyViewer(w, r) {
 				return
 			}
-			handleCreateDeployTask(w, r, s, gs, sc)
+			handleCreateDeployTask(w, r, s, gs, sc, bus)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -458,6 +465,69 @@ func New(s *store.Store, gs *grpcserver.Server, as *auth.Service, sc *scheduler.
 			alerts = []monitor.AlertEvent{}
 		}
 		auth.WriteJSON(w, http.StatusOK, alerts)
+	}))
+
+	// v0.7.0: API Token 管理(admin 专用) — 列出/创建
+	mux.HandleFunc("/api/tokens", mw.WrapAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handleListTokens(w, r, s)
+		case http.MethodPost:
+			handleCreateToken(w, r, s)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// v0.7.0: API Token 管理(admin 专用) — 删除指定 token
+	mux.HandleFunc("/api/tokens/", mw.WrapAdmin(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/api/tokens/")
+		if id == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			handleDeleteToken(w, r, s, id)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+
+	// v0.7.0: Webhook 订阅管理 — 列出/创建
+	mux.HandleFunc("/api/webhooks", mw.WrapAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handleListWebhooks(w, r, s)
+		case http.MethodPost:
+			handleCreateWebhook(w, r, s)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// v0.7.0: Webhook 订阅管理 — 更新/删除/测试推送
+	mux.HandleFunc("/api/webhooks/", mw.WrapAdmin(func(w http.ResponseWriter, r *http.Request) {
+		id, action := splitWebhookPath(r.URL.Path)
+		if id == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if action == "test" {
+			if r.Method == http.MethodPost {
+				handleTestWebhook(w, r, s, id)
+				return
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			handleUpdateWebhook(w, r, s, id)
+		case http.MethodDelete:
+			handleDeleteWebhook(w, r, s, id)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	}))
 
 	// 自动注入: SSH 推送二进制 + systemd, 远程拉起节点

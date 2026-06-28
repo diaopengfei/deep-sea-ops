@@ -25,6 +25,8 @@ var (
 	deployTasksBucket    = []byte("deploy_tasks")    // 部署任务(扩容迁移)
 	credentialsBucket    = []byte("credentials")     // SSH 凭据
 	configVersionsBucket = []byte("config_versions") // v0.6.5 配置基准版本历史
+	apiTokensBucket      = []byte("api_tokens")      // v0.7.0 API Token
+	webhooksBucket       = []byte("webhooks")        // v0.7.0 Webhook 订阅
 )
 
 // FSM 是状态机。Raft 负责把命令按顺序可靠地送达, FSM 负责收到命令后真正改状态。
@@ -40,7 +42,7 @@ func NewFSM(dbPath string) (*FSM, error) {
 		return nil, fmt.Errorf("打开 bbolt: %w", err)
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket, configVersionsBucket} {
+		for _, b := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket, configVersionsBucket, apiTokensBucket, webhooksBucket} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -96,6 +98,16 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 			return f.applyAddCredential(tx, cmd.Credential)
 		case opDelCredential:
 			return f.applyDelCredential(tx, cmd.CredID)
+		case opAddToken:
+			return f.applyAddToken(tx, cmd.APIToken)
+		case opUpdTokenLastUsed:
+			return f.applyUpdTokenLastUsed(tx, cmd.APIToken)
+		case opDelToken:
+			return f.applyDelToken(tx, cmd.TokenID)
+		case opAddWebhook:
+			return f.applyAddWebhook(tx, cmd.Webhook)
+		case opDelWebhook:
+			return f.applyDelWebhook(tx, cmd.WebhookID)
 		default:
 			return fmt.Errorf("未知操作: %s", cmd.Op)
 		}
@@ -617,6 +629,140 @@ func (f *FSM) ListCredentials() []model.SSHCredential {
 	return out
 }
 
+// --- API Token (v0.7.0) ---
+
+// applyAddToken 新增或覆盖 API Token(按 ID 作 key)。
+func (f *FSM) applyAddToken(tx *bbolt.Tx, t model.APIToken) error {
+	b := tx.Bucket(apiTokensBucket)
+	val, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(t.ID), val)
+}
+
+// applyUpdTokenLastUsed 原子更新 Token 的 LastUsedAt(鉴权时调用)。
+// 只改 LastUsedAt, 其余字段保持原值。
+func (f *FSM) applyUpdTokenLastUsed(tx *bbolt.Tx, upd model.APIToken) error {
+	b := tx.Bucket(apiTokensBucket)
+	val := b.Get([]byte(upd.ID))
+	if val == nil {
+		return fmt.Errorf("token 不存在: %s", upd.ID)
+	}
+	var t model.APIToken
+	if err := json.Unmarshal(val, &t); err != nil {
+		return err
+	}
+	t.LastUsedAt = upd.LastUsedAt
+	out, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(t.ID), out)
+}
+
+// applyDelToken 删除 API Token。
+func (f *FSM) applyDelToken(tx *bbolt.Tx, id string) error {
+	b := tx.Bucket(apiTokensBucket)
+	return b.Delete([]byte(id))
+}
+
+// GetToken 按 ID 查 API Token。
+func (f *FSM) GetToken(id string) (*model.APIToken, bool) {
+	var t *model.APIToken
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(apiTokensBucket)
+		val := b.Get([]byte(id))
+		if val == nil {
+			return nil
+		}
+		t = &model.APIToken{}
+		return json.Unmarshal(val, t)
+	}); err != nil {
+		log.Printf("FSM GetToken 读取失败: %v", err)
+		return nil, false
+	}
+	if t == nil {
+		return nil, false
+	}
+	return t, true
+}
+
+// ListTokens 列出所有 API Token。
+func (f *FSM) ListTokens() []model.APIToken {
+	out := make([]model.APIToken, 0)
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(apiTokensBucket)
+		return b.ForEach(func(k, v []byte) error {
+			var t model.APIToken
+			if err := json.Unmarshal(v, &t); err == nil {
+				out = append(out, t)
+			}
+			return nil
+		})
+	}); err != nil {
+		log.Printf("FSM ListTokens 读取失败: %v", err)
+	}
+	return out
+}
+
+// --- Webhook (v0.7.0) ---
+
+// applyAddWebhook 新增或覆盖 Webhook(按 ID 作 key)。
+func (f *FSM) applyAddWebhook(tx *bbolt.Tx, wh model.Webhook) error {
+	b := tx.Bucket(webhooksBucket)
+	val, err := json.Marshal(wh)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(wh.ID), val)
+}
+
+// applyDelWebhook 删除 Webhook。
+func (f *FSM) applyDelWebhook(tx *bbolt.Tx, id string) error {
+	b := tx.Bucket(webhooksBucket)
+	return b.Delete([]byte(id))
+}
+
+// GetWebhook 按 ID 查 Webhook。
+func (f *FSM) GetWebhook(id string) (*model.Webhook, bool) {
+	var wh *model.Webhook
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(webhooksBucket)
+		val := b.Get([]byte(id))
+		if val == nil {
+			return nil
+		}
+		wh = &model.Webhook{}
+		return json.Unmarshal(val, wh)
+	}); err != nil {
+		log.Printf("FSM GetWebhook 读取失败: %v", err)
+		return nil, false
+	}
+	if wh == nil {
+		return nil, false
+	}
+	return wh, true
+}
+
+// ListWebhooks 列出所有 Webhook。
+func (f *FSM) ListWebhooks() []model.Webhook {
+	out := make([]model.Webhook, 0)
+	if err := f.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(webhooksBucket)
+		return b.ForEach(func(k, v []byte) error {
+			var wh model.Webhook
+			if err := json.Unmarshal(v, &wh); err == nil {
+				out = append(out, wh)
+			}
+			return nil
+		})
+	}); err != nil {
+		log.Printf("FSM ListWebhooks 读取失败: %v", err)
+	}
+	return out
+}
+
 // --- Snapshot / Restore ---
 
 type snapshotData struct {
@@ -626,6 +772,8 @@ type snapshotData struct {
 	DeployTasks     map[string]model.DeployTask
 	Credentials     map[string]model.SSHCredential
 	ConfigVersions  map[string]model.ConfigVersion // v0.6.5 配置基准版本历史
+	APITokens       map[string]model.APIToken      // v0.7.0 API Token
+	Webhooks        map[string]model.Webhook       // v0.7.0 Webhook 订阅
 }
 
 // Snapshot 打包当前状态, 供 Raft 压缩日志和给新节点同步用。
@@ -637,6 +785,8 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		DeployTasks:    make(map[string]model.DeployTask),
 		Credentials:    make(map[string]model.SSHCredential),
 		ConfigVersions: make(map[string]model.ConfigVersion),
+		APITokens:      make(map[string]model.APIToken),
+		Webhooks:       make(map[string]model.Webhook),
 	}
 	if err := f.db.View(func(tx *bbolt.Tx) error {
 		readBucket := func(name []byte, fn func(k, v []byte) error) {
@@ -688,6 +838,20 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 			}
 			return nil
 		})
+		readBucket(apiTokensBucket, func(k, v []byte) error {
+			var t model.APIToken
+			if err := json.Unmarshal(v, &t); err == nil {
+				data.APITokens[string(k)] = t
+			}
+			return nil
+		})
+		readBucket(webhooksBucket, func(k, v []byte) error {
+			var wh model.Webhook
+			if err := json.Unmarshal(v, &wh); err == nil {
+				data.Webhooks[string(k)] = wh
+			}
+			return nil
+		})
 		return nil
 	}); err != nil {
 		log.Printf("FSM Snapshot 读取失败: %v", err)
@@ -704,7 +868,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	}
 	if err := f.db.Update(func(tx *bbolt.Tx) error {
 		// 逐个 bucket: 删旧重建
-		for _, name := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket, configVersionsBucket} {
+		for _, name := range [][]byte{serversBucket, usersBucket, projectsBucket, deployTasksBucket, credentialsBucket, configVersionsBucket, apiTokensBucket, webhooksBucket} {
 			if err := tx.DeleteBucket(name); err != nil && err != bbolt.ErrBucketNotFound {
 				return err
 			}
@@ -775,6 +939,26 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 						return err
 					}
 				}
+			case map[string]model.APIToken:
+				for id, t := range m {
+					val, err := json.Marshal(t)
+					if err != nil {
+						return fmt.Errorf("序列化 APIToken %s 失败: %w", id, err)
+					}
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
+			case map[string]model.Webhook:
+				for id, wh := range m {
+					val, err := json.Marshal(wh)
+					if err != nil {
+						return fmt.Errorf("序列化 Webhook %s 失败: %w", id, err)
+					}
+					if err := b.Put([]byte(id), val); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		}
@@ -796,12 +980,18 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		if err := restoreBucket(configVersionsBucket, data.ConfigVersions); err != nil {
 			return err
 		}
+		if err := restoreBucket(apiTokensBucket, data.APITokens); err != nil {
+			return err
+		}
+		if err := restoreBucket(webhooksBucket, data.Webhooks); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("写入恢复数据: %w", err)
 	}
-	log.Printf("FSM 从快照恢复: %d 服务器, %d 用户, %d 项目, %d 部署任务, %d 凭据, %d 配置版本",
-		len(data.Servers), len(data.Users), len(data.Projects), len(data.DeployTasks), len(data.Credentials), len(data.ConfigVersions))
+	log.Printf("FSM 从快照恢复: %d 服务器, %d 用户, %d 项目, %d 部署任务, %d 凭据, %d 配置版本, %d Token, %d Webhook",
+		len(data.Servers), len(data.Users), len(data.Projects), len(data.DeployTasks), len(data.Credentials), len(data.ConfigVersions), len(data.APITokens), len(data.Webhooks))
 	return nil
 }
 

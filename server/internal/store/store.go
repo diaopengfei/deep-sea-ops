@@ -312,6 +312,60 @@ func (s *Store) ListCredentials() []model.SSHCredential {
 	return s.fsm.ListCredentials()
 }
 
+// --- API Token 相关 (v0.7.0) ---
+
+// AddToken 提交"新增/覆盖 API Token"命令到 Raft。
+func (s *Store) AddToken(t model.APIToken) error {
+	cmd := command{Op: opAddToken, APIToken: t}
+	return s.apply(cmd)
+}
+
+// UpdTokenLastUsed 提交"更新 Token 最后使用时间"命令到 Raft(鉴权时调用)。
+func (s *Store) UpdTokenLastUsed(id string, lastUsedAt int64) error {
+	cmd := command{Op: opUpdTokenLastUsed, APIToken: model.APIToken{ID: id, LastUsedAt: lastUsedAt}}
+	return s.apply(cmd)
+}
+
+// DelToken 提交"删除 API Token"命令到 Raft。
+func (s *Store) DelToken(id string) error {
+	cmd := command{Op: opDelToken, TokenID: id}
+	return s.apply(cmd)
+}
+
+// GetToken 按 ID 查 API Token。
+func (s *Store) GetToken(id string) (*model.APIToken, bool) {
+	return s.fsm.GetToken(id)
+}
+
+// ListTokens 列出所有 API Token。
+func (s *Store) ListTokens() []model.APIToken {
+	return s.fsm.ListTokens()
+}
+
+// --- Webhook 相关 (v0.7.0) ---
+
+// AddWebhook 提交"新增/覆盖 Webhook"命令到 Raft(同 ID 覆盖)。
+func (s *Store) AddWebhook(wh model.Webhook) error {
+	cmd := command{Op: opAddWebhook, Webhook: wh}
+	return s.apply(cmd)
+}
+
+// DelWebhook 提交"删除 Webhook"命令到 Raft。
+func (s *Store) DelWebhook(id string) error {
+	cmd := command{Op: opDelWebhook, WebhookID: id}
+	return s.apply(cmd)
+}
+
+// GetWebhook 按 ID 查 Webhook。
+func (s *Store) GetWebhook(id string) (*model.Webhook, bool) {
+	return s.fsm.GetWebhook(id)
+}
+
+// ListWebhooks 列出所有 Webhook。
+func (s *Store) ListWebhooks() []model.Webhook {
+	return s.fsm.ListWebhooks()
+}
+
 // --- 集群管理 ---
 
 // AddVoter 把一个新节点加入集群(Leader 调用)。

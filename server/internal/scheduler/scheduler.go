@@ -32,6 +32,10 @@ type Scheduler struct {
 
 	// per-agent 互斥锁, 防止后台扫描与手动扫描并发执行导致数据覆盖
 	agentMu sync.Map // map[string]*sync.Mutex
+
+	// v0.7.0: 新项目发现回调, 由 main 装配, 用于发布事件到 EventBus。
+	// 参数: agentID + 新项目路径列表(此前未持久化的项目)。
+	onNewProjects func(agentID string, newPaths []string)
 }
 
 // NewScheduler 创建扫描调度器。interval 为扫描周期, 建议 10 分钟。
@@ -42,6 +46,12 @@ func NewScheduler(s *store.Store, gs *grpcserver.Server, interval time.Duration)
 		interval: interval,
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// SetOnNewProjects 注入新项目发现回调(v0.7.0)。
+// 回调在扫描持久化后调用, 参数为此次新发现的项目路径列表(此前未持久化的)。
+func (sc *Scheduler) SetOnNewProjects(fn func(agentID string, newPaths []string)) {
+	sc.onNewProjects = fn
 }
 
 // Start 启动后台扫描 goroutine。
@@ -140,10 +150,18 @@ func (sc *Scheduler) scanAgent(agentID string) {
 	}
 
 	// 3. 持久化项目记录到 Raft
+	// v0.7.0: 在清空前先记录已有项目路径, 用于检测"新发现项目"事件
+	existingPaths := make(map[string]bool)
+	if sc.onNewProjects != nil {
+		for _, p := range sc.store.ListProjects(agentID) {
+			existingPaths[p.Path] = true
+		}
+	}
 	if err := sc.store.ClearAgentProjects(agentID); err != nil {
 		log.Printf("[扫描调度器] Agent %s 清除旧项目记录失败: %v", agentID, err)
 	}
 	now := time.Now()
+	var newPaths []string
 	for _, p := range result.Projects {
 		rec := model.ProjectRecord{
 			ID:          agentID + "|" + p.Path,
@@ -161,6 +179,13 @@ func (sc *Scheduler) scanAgent(agentID string) {
 		if err := sc.store.AddProject(rec); err != nil {
 			log.Printf("[扫描调度器] Agent %s 持久化项目 %s 失败: %v", agentID, rec.ID, err)
 		}
+		if sc.onNewProjects != nil && !existingPaths[p.Path] {
+			newPaths = append(newPaths, p.Path)
+		}
+	}
+	// v0.7.0: 触发新项目发现回调(供 EventBus 发布 scan.new_project 事件)
+	if sc.onNewProjects != nil && len(newPaths) > 0 {
+		sc.onNewProjects(agentID, newPaths)
 	}
 
 	// 4. 对 Spring 项目自动触发配置比对

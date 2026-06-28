@@ -19,8 +19,10 @@ import (
 	"github.com/deepsea-ops/server/internal/auth"
 	"github.com/deepsea-ops/server/internal/config"
 	"github.com/deepsea-ops/server/internal/crypto"
+	"github.com/deepsea-ops/server/internal/eventbus"
 	"github.com/deepsea-ops/server/internal/grpcserver"
 	"github.com/deepsea-ops/server/internal/metrics"
+	"github.com/deepsea-ops/server/internal/model"
 	"github.com/deepsea-ops/server/internal/monitor"
 	pb "github.com/deepsea-ops/server/internal/proto/agent"
 	"github.com/deepsea-ops/server/internal/scheduler"
@@ -102,8 +104,29 @@ func main() {
 		}
 	}()
 
+	// v0.7.0: 事件总线(异步, 缓冲 256)。部署完成/扫描发现新项目/告警触发等事件经总线推送到 Webhook。
+	// 启动顺序: EventBus 必须在扫描调度器和告警引擎之前创建, 以便装配事件源回调。
+	eventBus := eventbus.New(256)
+	eventBus.Start()
+	defer eventBus.Stop()
+
 	// 启动后台自动扫描调度器(每 10 分钟扫描所有在线 Agent)
 	scanScheduler := scheduler.NewScheduler(storeInstance, grpcSrv, 10*time.Minute)
+	// v0.7.0: 装配新项目发现回调, 扫描到此前未持久化的项目时发布事件供 Webhook 推送
+	scanScheduler.SetOnNewProjects(func(agentID string, newPaths []string) {
+		if len(newPaths) == 0 {
+			return
+		}
+		eventBus.Publish(model.Event{
+			Type:      model.EventScanNewProject,
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"agentId":  agentID,
+				"newPaths": newPaths,
+				"count":    len(newPaths),
+			},
+		})
+	})
 	scanScheduler.Start()
 	defer scanScheduler.Stop()
 
@@ -121,6 +144,8 @@ func main() {
 			URL:  cfg.Monitor.WebhookURL,
 		})
 	}
+	// v0.7.0: 用事件总线适配器包裹原通知器, 告警触发/恢复时同时发布事件供 Webhook 推送
+	alertNotifier = newEventBusNotifier(alertNotifier, eventBus)
 	alertRules := make([]monitor.Rule, 0, len(cfg.Monitor.Rules))
 	for _, r := range cfg.Monitor.Rules {
 		alertRules = append(alertRules, monitor.Rule{
@@ -131,9 +156,14 @@ func main() {
 	alertEngine.Start()
 	defer alertEngine.Stop()
 
+	// v0.7.0: Webhook 分发器(订阅事件总线, 按订阅过滤后异步推送, 带指数退避重试)
+	webhookDispatcher := api.NewWebhookDispatcher(storeInstance, eventBus)
+	webhookDispatcher.Start()
+
 	// HTTP 路由: 所有 /api/ 受 JWT 中间件保护(除 /api/login 等白名单)
 	// 传入 scanScheduler, 部署成功后自动触发目标 Agent 扫描
-	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler, metricsStore, auditStore, alertEngine)
+	// 传入 eventBus, 部署/扫描/告警等事件经总线推送到 Webhook(v0.7.0)
+	handler := api.New(storeInstance, grpcSrv, authSvc, scanScheduler, metricsStore, auditStore, alertEngine, eventBus)
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: handler,
@@ -161,6 +191,50 @@ func main() {
 	}
 	g.GracefulStop()
 	log.Println("已关闭, 退出")
+}
+
+// eventBusNotifier 将告警事件桥接到事件总线(v0.7.0)。
+// 实现 monitor.Notifier 接口, 告警触发/恢复时发布事件供 Webhook 推送;
+// 同时委托给底层 notifier(可能为 nil), 保留原有的钉钉/飞书等通知渠道。
+type eventBusNotifier struct {
+	inner monitor.Notifier
+	bus   *eventbus.EventBus
+}
+
+// newEventBusNotifier 用事件总线适配器包裹原通知器。
+// inner 可为 nil(未配置告警 Webhook 时), 此时只发布事件不发送原通知。
+func newEventBusNotifier(inner monitor.Notifier, bus *eventbus.EventBus) *eventBusNotifier {
+	return &eventBusNotifier{inner: inner, bus: bus}
+}
+
+// Notify 实现 monitor.Notifier 接口。
+// 先委托给原通知器(钉钉/飞书/Webhook 等), 保留 v0.6.3 行为; 再发布到事件总线供 Webhook 订阅推送。
+func (n *eventBusNotifier) Notify(event monitor.AlertEvent) error {
+	var err error
+	if n.inner != nil {
+		err = n.inner.Notify(event)
+	}
+	if n.bus != nil {
+		eventType := model.EventAlertFiring
+		if event.Status == "resolved" {
+			eventType = model.EventAlertResolved
+		}
+		n.bus.Publish(model.Event{
+			Type:      eventType,
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"agentId":    event.AgentID,
+				"ruleName":   event.Rule.Name,
+				"metric":     event.Rule.Metric,
+				"threshold":  event.Rule.Threshold,
+				"value":      event.Value,
+				"status":     event.Status,
+				"firedAt":    event.FiredAt,
+				"resolvedAt": event.ResolvedAt,
+			},
+		})
+	}
+	return err
 }
 
 // validateSecurityConfig 校验安全配置, 对不安全的情况打印警告。
